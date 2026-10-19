@@ -51,7 +51,9 @@ $DOMAIN {
 	}
 }
 CADDY
+  touch /var/log/caddy/vibit-trader.log && chown caddy:caddy /var/log/caddy/vibit-trader.log
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+  chown caddy:caddy /var/log/caddy/vibit-trader.log
   systemctl reload caddy
   echo "Caddy: added $DOMAIN"
 fi

@@ -5,7 +5,8 @@ import { atr, avgDollarVolume, roc, round2, sma, type DailyBar } from './indicat
  * Fully deterministic. Uses only COMPLETED daily bars (caller must pass completedBars()).
  *
  * Regime:   SPY close > SPY SMA200, otherwise no new entries.
- * Entry:    close > SMA200 and SMA50 > SMA200 and 6-month momentum (ROC126) > 0.
+ * Entry:    close > SMA50 > SMA200 (and close > SMA200) and 6-month momentum (ROC126) > 0.
+ *           close > SMA50 is required so an entry never immediately satisfies the exit rule.
  *           Rank by ROC126, fill free slots only.
  * Stop:     entry − 2 × ATR14     Take-profit: entry + 4 × ATR14 (≈ 2R)
  * Size:     floor(min(riskBudget / (entry − stop), maxPositionUsd / entry)) whole shares.
@@ -108,7 +109,7 @@ export function runStrategy(input: StrategyInput): StrategyOutput {
       if (close < input.minPriceUsd) { skipped.push({ symbol, reason: `מחיר נמוך מ-$${input.minPriceUsd}` }); continue; }
       if (close > input.maxPositionUsd) { skipped.push({ symbol, reason: `מניה אחת ($${close}) יקרה מגודל פוזיציה מקסימלי ($${input.maxPositionUsd})` }); continue; }
       if (adv < P.minIexDollarVolume) { skipped.push({ symbol, reason: 'מחזור מסחר נמוך מדי (לפי IEX)' }); continue; }
-      if (!(close > s200 && s50 > s200)) continue; // not in uptrend — silent (most of the universe)
+      if (!(close > s50 && close > s200 && s50 > s200)) continue; // not in uptrend — silent. close > SMA50 keeps entry consistent with the exit rule
       if (!(m > 0)) continue;
       ranked.push({ symbol, roc126: m, close, sma50: s50, sma200: s200, atr14: a, adv });
     }
@@ -128,7 +129,7 @@ export function runStrategy(input: StrategyInput): StrategyOutput {
         kind: 'entry', symbol: c.symbol, side: 'buy', qty, priceRef: c.close, stop, takeProfit: target,
         rationale: {
           reasons: [
-            `מגמה עולה: מחיר ${c.close} מעל ממוצע 200 (${round2(c.sma200)}), וממוצע 50 (${round2(c.sma50)}) מעל ממוצע 200`,
+            `מגמה עולה: מחיר ${c.close} מעל ממוצע 50 (${round2(c.sma50)}) ומעל ממוצע 200 (${round2(c.sma200)}), וממוצע 50 מעל ממוצע 200`,
             `מומנטום 6 חודשים: ${(c.roc126 * 100).toFixed(1)}% (מקום ${ranked.indexOf(c) + 1} מתוך ${ranked.length} מועמדים)`,
             `סטופ = מחיר − 2×ATR (${round2(c.atr14)}) = ${stop}; יעד = מחיר + 4×ATR = ${target}`,
             `כמות ${qty}: סיכון מתוכנן $${round2(qty * riskPerShare)} (תקציב $${input.riskBudgetUsd}), שווי $${round2(qty * c.close)}`,

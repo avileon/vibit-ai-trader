@@ -77,6 +77,12 @@ describe('momentum-trend-v1', () => {
     expect(exit?.side).toBe('sell');
     expect(exit?.qty).toBe(2);
   });
+  it('never enters a name trading below its SMA50 (would contradict the exit rule)', () => {
+    const bars = makeBars(260, 50, 0.002, NOW);
+    for (let i = 255; i < 260; i++) bars[i] = { ...bars[i], c: bars[i].c * 0.9 }; // dip under SMA50, still above SMA200
+    const out = runStrategy(input({ bars: { DIP: bars } }));
+    expect(out.proposals).toHaveLength(0);
+  });
   it('is deterministic', () => {
     expect(JSON.stringify(runStrategy(input()))).toBe(JSON.stringify(runStrategy(input())));
   });

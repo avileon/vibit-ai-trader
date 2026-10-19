@@ -16,6 +16,7 @@ let cfgRef: AppConfig;
 const VERSION = '0.5.0-phaseF';
 const SYNC_EVERY_MS = 60_000;
 let lastSync = 0;
+let backtestRunning = false;
 const TICK_MS = 30_000;
 
 async function startup() {
@@ -49,9 +50,14 @@ async function tick() {
     const rep = await maybeRunDailyCycle(broker);
     if (rep.ran) console.log(`[worker] daily cycle: ${JSON.stringify(rep.results)}`);
   }
-  // research jobs run after trading duties (never instead of them)
-  const bt = await runNextBacktest(broker);
-  if (bt) console.log(`[worker] backtest #${bt} finished`);
+  // research jobs run in a background thread — never block trading duties or the heartbeat
+  if (!backtestRunning) {
+    backtestRunning = true;
+    runNextBacktest(broker)
+      .then((bt) => { if (bt) console.log(`[worker] backtest #${bt} finished`); })
+      .catch((e) => console.error('[worker] backtest error:', (e as Error).message))
+      .finally(() => { backtestRunning = false; });
+  }
 }
 
 let running = true;

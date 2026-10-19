@@ -6,7 +6,24 @@ import { currentLimits } from '../routes/control.js';
 import { STRATEGY_PARAMS, STRATEGY_VERSION } from '../strategy/momentumTrend.js';
 import { BENCHMARK, UNIVERSE } from '../strategy/universe.js';
 import { addDays, ensureBars, loadBars } from './data.js';
+import { Worker } from 'node:worker_threads';
 import { fullReport } from './report.js';
+import type { BacktestConfig } from './engine.js';
+import type { DailyBar } from '../strategy/indicators.js';
+
+/** In production (compiled .js) run in a worker thread; under tsx/tests run inline. */
+function runReport(bars: Record<string, DailyBar[]>, cfg: BacktestConfig, wf: boolean, progress: (s: string) => void): Promise<ReturnType<typeof fullReport>> {
+  if (!import.meta.url.endsWith('.js')) return Promise.resolve(fullReport(bars, cfg, wf, progress));
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./thread.js', import.meta.url), { workerData: { bars, cfg, withWalkForward: wf } });
+    w.on('message', (m: { type: string; s?: string; report?: ReturnType<typeof fullReport> }) => {
+      if (m.type === 'progress') progress(m.s!);
+      if (m.type === 'done') resolve(m.report!);
+    });
+    w.on('error', reject);
+    w.on('exit', (code) => { if (code !== 0) reject(new Error(`backtest thread exited ${code}`)); });
+  });
+}
 
 export const backtestRequestSchema = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default('2017-01-01'),
@@ -41,7 +58,7 @@ export async function runNextBacktest(broker: BrokerTrader): Promise<number | nu
     const bars = await loadBars(symbols, '2015-01-01', yesterday);
     const { limits } = await currentLimits();
     progress('מריץ סימולציה');
-    const report = fullReport(bars, {
+    const report = await runReport(bars, {
       start: req.start, end, capital: limits.capitalBaseUsd, limits, params: STRATEGY_PARAMS, slippageBps: req.slippageBps,
       feePerOrder: req.feePerOrder, maxChase: 0.02, universe: [...UNIVERSE], benchmark: BENCHMARK, haltOnDrawdown: true,
     }, req.walkForward, progress);

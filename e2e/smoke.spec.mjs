@@ -1,0 +1,34 @@
+// E2E smoke: login → dashboard (DEMO) → kill switch → resume. Run with: node e2e/smoke.spec.mjs
+import { chromium } from 'playwright';
+const BASE = process.env.E2E_BASE || 'http://localhost:3000';
+const EMAIL = process.env.E2E_EMAIL, PASS = process.env.E2E_PASSWORD;
+const OUT = process.env.E2E_OUT || '.';
+const assert = (c, m) => { if (!c) throw new Error('FAIL: ' + m); console.log('ok -', m); };
+
+const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
+const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+await page.goto(BASE + '/');
+assert(page.url().endsWith('/login'), 'unauthenticated redirect to /login');
+await page.fill('#email', EMAIL); await page.fill('#pw', 'wrong-password');
+await page.click('button:has-text("התחברות")');
+await page.waitForSelector('[role=alert]'); assert(true, 'wrong password shows error');
+await page.fill('#pw', PASS); await page.click('button:has-text("התחברות")');
+await page.waitForSelector('text=שווי התיק לאורך זמן');
+assert(await page.isVisible('.demo-badge'), 'dashboard shows DEMO badge');
+assert(await page.isVisible('text=Paper בלבד'), 'paper-only indicator visible');
+await page.screenshot({ path: `${OUT}/dashboard-desktop.png`, fullPage: true });
+await page.goto(BASE + '/risk'); await page.waitForSelector('text=מתג חירום');
+await page.fill('#r', 'בדיקת E2E'); await page.click('button:has-text("הפעל Kill Switch")');
+await page.waitForSelector('text=Kill Switch פעיל מאז'); assert(true, 'kill switch activates');
+await page.click('button:has-text("בקש הפעלה")'); await page.waitForSelector('text=ההפעלה נחסמה'); assert(true, 'ACTIVE blocked with reasons');
+await page.screenshot({ path: `${OUT}/risk-halted.png`, fullPage: true });
+await page.fill('.card input.input', 'אני מאשר'); await page.click('button:has-text("שחרר ל-SAFE")');
+await page.waitForSelector('text=מצב נוכחי: SAFE'); assert(true, 'resume returns to SAFE');
+const m = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
+await m.context().addCookies(await page.context().cookies());
+await m.goto(BASE + '/'); await m.waitForSelector('text=שווי התיק לאורך זמן');
+const overflow = await m.evaluate(() => document.documentElement.scrollWidth > 391);
+assert(!overflow, 'no horizontal overflow on mobile');
+await m.screenshot({ path: `${OUT}/dashboard-mobile.png`, fullPage: true });
+await browser.close();
+console.log('E2E passed');

@@ -1,0 +1,8 @@
+# MySQL for integration tests only:  docker compose -f docker-compose.test.yml up -d
+services:
+  mysql-test:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: testroot
+    ports: ["3307:3306"]
+    tmpfs: [/var/lib/mysql]

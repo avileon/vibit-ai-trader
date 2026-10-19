@@ -1,0 +1,17 @@
+{
+  "name": "vibit-ai-trader",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "test": "npm run test -w apps/api",
+    "build": "npm run build -w apps/api && npm run build -w apps/web",
+    "typecheck": "npm run typecheck -w apps/api && npm run typecheck -w apps/web",
+    "test:e2e": "node e2e/smoke.spec.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  }
+}

@@ -285,6 +285,35 @@ d('API integration (MySQL)', () => {
     });
   });
 
+  it('Strategy Lab: queue a backtest via API, worker runs it, result is readable', async () => {
+    const { MockBroker } = await import('./mockBroker.js');
+    const { makeBars } = await import('./fixtures.js');
+    const { runNextBacktest } = await import('../src/backtest/jobs.js');
+    const b = new MockBroker();
+    const end = new Date();
+    b.barsMulti = { SPY: makeBars(500, 300, 0.0006, end), XLF: makeBars(500, 20, 0.0015, end, 0.01), XLE: makeBars(500, 60, -0.0005, end) };
+    let r = await app.inject({ method: 'POST', url: '/api/backtests', headers: { ...H, cookie }, payload: { start: '2025-01-01', walkForward: false } });
+    expect(r.statusCode).toBe(200);
+    const id = r.json().id;
+    r = await app.inject({ method: 'POST', url: '/api/backtests', headers: { ...H, cookie }, payload: {} });
+    expect(r.statusCode).toBe(409); // one at a time
+    expect(await runNextBacktest(b)).toBe(id);
+    const run = (await app.inject({ url: `/api/backtests/${id}`, headers: { cookie } })).json();
+    expect(run.status, run.error).toBe('done');
+    expect(run.result.summary.strategy.days).toBeGreaterThan(50);
+    expect(run.result.segments).toHaveLength(3);
+    expect(run.result.caveats.join()).toMatch(/Survivorship/);
+    const list = (await app.inject({ url: '/api/backtests', headers: { cookie } })).json();
+    expect(list.runs[0].id).toBe(id);
+  });
+
+  it('live report endpoint works with paper data', async () => {
+    const r = (await app.inject({ url: '/api/reports?period=all', headers: { cookie } })).json();
+    expect(r.period).toBe('all');
+    expect(r).toHaveProperty('netPnlUsd');
+    expect(r).toHaveProperty('winRatePct');
+  });
+
   it('logout revokes the session', async () => {
     await app.inject({ method: 'POST', url: '/api/auth/logout', headers: { ...H, cookie } });
     expect((await app.inject({ url: '/api/auth/me', headers: { cookie } })).statusCode).toBe(401);

@@ -120,7 +120,7 @@ export interface NewOrder {
 export interface Quote { symbol: string; bid: number; ask: number; ts: Date; last: number | null }
 
 export interface BrokerTrader extends BrokerReader {
-  getBarsMulti(symbols: string[], start: string): Promise<Record<string, Bar[]>>;
+  getBarsMulti(symbols: string[], start: string, opts?: { end?: string; feed?: 'iex' | 'sip' }): Promise<Record<string, Bar[]>>;
   getQuotes(symbols: string[]): Promise<Record<string, Quote>>;
   submitOrder(o: NewOrder): Promise<AlpacaOrder>;
   getOrderByClientId(clientOrderId: string): Promise<AlpacaOrder | null>;
@@ -266,17 +266,18 @@ export class AlpacaClient implements BrokerTrader {
     return r.bars?.[symbol] ?? [];
   }
 
-  async getBarsMulti(symbols: string[], start: string): Promise<Record<string, Bar[]>> {
+  async getBarsMulti(symbols: string[], start: string, opts: { end?: string; feed?: 'iex' | 'sip' } = {}): Promise<Record<string, Bar[]>> {
     const out: Record<string, Bar[]> = {};
     let pageToken: string | null | undefined;
     let pages = 0;
     do {
-      const q = new URLSearchParams({ symbols: symbols.join(','), timeframe: '1Day', start, feed: this.feed, adjustment: 'all', limit: '10000' });
+      const q = new URLSearchParams({ symbols: symbols.join(','), timeframe: '1Day', start, feed: opts.feed ?? this.feed, adjustment: 'all', limit: '10000' });
+      if (opts.end) q.set('end', opts.end);
       if (pageToken) q.set('page_token', pageToken);
       const r = this.parse(barsResponseSchema, await this.request(`${this.data}/v2/stocks/bars?${q}`), 'bars');
       for (const [sym, arr] of Object.entries(r.bars ?? {})) (out[sym] ??= []).push(...arr);
       pageToken = r.next_page_token;
-      if (++pages > 50) throw new BrokerError('bad_response', 'Too many bar pages');
+      if (++pages > 200) throw new BrokerError('bad_response', 'Too many bar pages');
     } while (pageToken);
     return out;
   }

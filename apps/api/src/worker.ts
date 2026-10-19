@@ -4,6 +4,7 @@ import { getPool, closePool, type Row } from './db/pool.js';
 import { audit } from './lib/audit.js';
 import { buildBrokerClient, runSync } from './broker/index.js';
 import { housekeeping, maybeRunDailyCycle } from './engine/cycle.js';
+import { runNextBacktest } from './backtest/jobs.js';
 import type { AppConfig } from './config.js';
 let cfgRef: AppConfig;
 
@@ -12,7 +13,7 @@ let cfgRef: AppConfig;
  * כל 30 שנ׳: heartbeat. כל דקה: סנכרון Alpaca Paper + housekeeping (Kill Switch אוטומטי, ביטול כניסות ישנות).
  * פעם ביום (10:00–15:30 ניו יורק, רק במצב ACTIVE): Strategy → RiskEngine → Executor.
  */
-const VERSION = '0.4.0-phaseD';
+const VERSION = '0.5.0-phaseF';
 const SYNC_EVERY_MS = 60_000;
 let lastSync = 0;
 const TICK_MS = 30_000;
@@ -44,9 +45,13 @@ async function tick() {
   if (!broker) return;
   const notes = await housekeeping(broker);
   for (const n of notes) console.warn(`[worker] ${n}`);
-  if (st.kill_switch || st.mode !== 'ACTIVE') return;
-  const rep = await maybeRunDailyCycle(broker);
-  if (rep.ran) console.log(`[worker] daily cycle: ${JSON.stringify(rep.results)}`);
+  if (!(st.kill_switch || st.mode !== 'ACTIVE')) {
+    const rep = await maybeRunDailyCycle(broker);
+    if (rep.ran) console.log(`[worker] daily cycle: ${JSON.stringify(rep.results)}`);
+  }
+  // research jobs run after trading duties (never instead of them)
+  const bt = await runNextBacktest(broker);
+  if (bt) console.log(`[worker] backtest #${bt} finished`);
 }
 
 let running = true;

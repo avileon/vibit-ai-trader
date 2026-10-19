@@ -8,6 +8,8 @@ import { encryptSecret, maskSecret } from '../lib/crypto.js';
 import { assertLooksLikePaperKey, PaperGuardError, ALPACA_PAPER_TRADING_URL } from '../lib/paperGuard.js';
 import { getSetting, setSetting } from '../lib/settings.js';
 import { buildBrokerClient, runSync } from '../broker/index.js';
+import { backtestRequestSchema, enqueueBacktest } from '../backtest/jobs.js';
+import { liveReport } from '../reports/live.js';
 import { killSwitchThreshold, riskBudgetPerTrade, riskLimitsSchema } from '../riskConfig.js';
 
 const ALLOWED_SECRETS = ['ALPACA_KEY_ID', 'ALPACA_SECRET_KEY', 'ANTHROPIC_API_KEY'] as const;
@@ -117,6 +119,40 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
       report: await getSetting('engine_last_report', null),
       proposals: props.map((p) => ({ ...p, rationale: parse(p.rationale), checks: p.checks ? parse(p.checks) : null })),
     };
+  });
+
+  // ---------- Strategy Lab ----------
+  app.post('/api/backtests', { preHandler: requireAdmin, config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (req, reply) => {
+    const b = backtestRequestSchema.safeParse(req.body ?? {});
+    if (!b.success) return reply.code(400).send({ error: 'invalid_input' });
+    const [busy] = await getPool().query<Row[]>("SELECT COUNT(*) c FROM backtest_runs WHERE status IN ('queued','running')");
+    if (Number(busy[0].c) > 0) return reply.code(409).send({ error: 'busy', message: 'כבר רצה בדיקה — המתן לסיומה' });
+    const id = await enqueueBacktest(b.data, req.user!.email);
+    await audit(req.user!.email, 'backtest.enqueued', { id }, req.ip);
+    return { ok: true, id };
+  });
+  app.get('/api/backtests', { preHandler: requireAuth }, async () => {
+    const [rows] = await getPool().query<Row[]>(
+      `SELECT id, status, config, progress, error, created_at, finished_at,
+        JSON_EXTRACT(result, '$.summary.strategy.totalReturnPct') AS ret, JSON_EXTRACT(result, '$.summary.benchmark.totalReturnPct') AS bench
+       FROM backtest_runs ORDER BY id DESC LIMIT 30`,
+    );
+    return { runs: rows.map((r) => ({ ...r, config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config })) };
+  });
+  app.get('/api/backtests/:id', { preHandler: requireAuth }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: 'invalid_input' });
+    const [rows] = await getPool().query<Row[]>('SELECT id, status, config, progress, error, result, created_at, finished_at FROM backtest_runs WHERE id=?', [id]);
+    if (!rows.length) return reply.code(404).send({ error: 'not_found' });
+    const r = rows[0];
+    return { ...r, config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config, result: r.result ? JSON.parse(r.result) : null };
+  });
+
+  // ---------- Reports (live paper trading) ----------
+  app.get('/api/reports', { preHandler: requireAuth }, async (req, reply) => {
+    const p = z.object({ period: z.enum(['day', 'week', 'month', 'all']).default('week') }).safeParse(req.query);
+    if (!p.success) return reply.code(400).send({ error: 'invalid_input' });
+    return liveReport(p.data.period, cfg.CAPITAL_BASE_USD);
   });
 
   // ---------- Broker ----------

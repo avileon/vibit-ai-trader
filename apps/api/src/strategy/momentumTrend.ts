@@ -14,7 +14,10 @@ import { atr, avgDollarVolume, roc, round2, sma, type DailyBar } from './indicat
  */
 export const STRATEGY_VERSION = 'momentum-trend-v1';
 
-export const STRATEGY_PARAMS = {
+export const STRATEGY_PARAMS: Readonly<{
+  smaFast: number; smaSlow: number; momentumLookback: number; atrPeriod: number; stopAtr: number; targetAtr: number;
+  maxHoldSessions: number; minBars: number; minIexDollarVolume: number;
+}> = {
   smaFast: 50,
   smaSlow: 200,
   momentumLookback: 126,
@@ -24,7 +27,8 @@ export const STRATEGY_PARAMS = {
   maxHoldSessions: 30,
   minBars: 210,
   minIexDollarVolume: 1_000_000, // IEX-only volume is a small slice of total volume — proxy threshold
-} as const;
+};
+export type StrategyParams = typeof STRATEGY_PARAMS;
 
 export interface StrategyPosition { symbol: string; qty: number; avgEntry: number; openedAt: Date }
 
@@ -61,8 +65,7 @@ export interface StrategyOutput {
   ranked: { symbol: string; roc126: number }[];
 }
 
-export function runStrategy(input: StrategyInput): StrategyOutput {
-  const P = STRATEGY_PARAMS;
+export function runStrategy(input: StrategyInput, P: StrategyParams = STRATEGY_PARAMS): StrategyOutput {
   const spyCloses = input.benchmarkBars.map((b) => b.c);
   const spyClose = spyCloses.at(-1) ?? null;
   const spySma200 = sma(spyCloses, P.smaSlow);

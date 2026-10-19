@@ -3,14 +3,14 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 
-const NAV = [
+const NAV: { href: string; label: string; icon: string; soon?: string }[] = [
   { href: '/', label: 'דשבורד', icon: '◧' },
   { href: '/portfolio', label: 'תיק השקעות', icon: '◫' },
   { href: '/orders', label: 'הוראות ועסקאות', icon: '⇄' },
   { href: '/risk', label: 'מרכז סיכונים', icon: '⛨' },
   { href: '/analyst', label: 'ניתוח המנוע', icon: '✦' },
-  { href: '/strategy', label: 'Strategy Lab', icon: '⚗', soon: 'שלב ו' },
-  { href: '/reports', label: 'דוחות', icon: '▤', soon: 'שלב ו' },
+  { href: '/strategy', label: 'Strategy Lab', icon: '⚗' },
+  { href: '/reports', label: 'דוחות', icon: '▤' },
   { href: '/learn', label: 'מרכז למידה', icon: '✎' },
   { href: '/settings', label: 'הגדרות', icon: '⚙' },
 ];

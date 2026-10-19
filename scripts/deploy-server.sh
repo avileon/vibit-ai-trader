@@ -60,6 +60,8 @@ fi
 
 # daily backup cron (03:15 UTC)
 CRON="15 3 * * * $APP/scripts/backup.sh >> /var/log/vibit-backup.log 2>&1"
-( crontab -l 2>/dev/null | grep -v vibit-trader/scripts/backup.sh; echo "$CRON" ) | crontab -
+# NOTE: never let a failing grep empty the crontab — build the new table first, then install it
+EXISTING=$(crontab -l 2>/dev/null | grep -v 'vibit-trader/scripts/backup.sh' || true)
+printf '%s\n%s\n' "$EXISTING" "$CRON" | sed '/^$/d' | crontab -
 chmod +x scripts/*.sh
 echo "DONE: https://$DOMAIN"

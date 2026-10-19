@@ -31,7 +31,24 @@
 
 ---
 
-## התקנה מקומית עם Docker (מומלץ)
+## התקנה ב-Windows (הדרך הקלה)
+
+1. ודא ש-**Docker Desktop** פתוח ומציג "Engine running".
+2. פתח את תיקיית הפרויקט בסייר הקבצים (התיקייה שבה נמצאים `docker-compose.yml` ו-`README.md`).
+3. בשורת הכתובת של הסייר הקלד `powershell` ולחץ Enter — PowerShell ייפתח **בתוך** התיקייה.
+4. הרץ:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1
+```
+הסקריפט: יוצר `.env` עם סודות אקראיים → בונה ומרים את הקונטיינרים → מחכה לבריאות → מבקש אימייל וסיסמה למנהל → טוען DEMO → פותח את הדפדפן.
+
+בדיקת בריאות בהמשך: `powershell -ExecutionPolicy Bypass -File .\scripts\healthcheck.ps1`
+
+> אל תדביק ב-PowerShell שורות עם הערות בעברית (`# ...`) — הקונסולה משבשת אותן.
+
+---
+
+## התקנה מקומית עם Docker (Linux / Mac)
 
 דרישות: Docker Desktop (או Docker Engine + Compose v2), Git.
 

@@ -21,9 +21,9 @@ export default function StrategyLab() {
   const [form, setForm] = useState({ start: '2017-01-01', slippageBps: 5, feePerOrder: 0.02, walkForward: true });
   const [msg, setMsg] = useState<string | null>(null);
 
-  const start = async () => {
+  const start = async (kind: 'single' | 'compare' = 'single') => {
     setMsg(null);
-    try { const r = await api<any>('/api/backtests', { method: 'POST', body: JSON.stringify(form) }); setMsg(`נוצרה בדיקה #${r.id} — רצה ברקע (כמה דקות)`); setSel(r.id); reload(); }
+    try { const r = await api<any>('/api/backtests', { method: 'POST', body: JSON.stringify({ ...form, kind }) }); setMsg(`נוצרה בדיקה #${r.id} — רצה ברקע (כמה דקות)`); setSel(r.id); reload(); }
     catch (e) { setMsg((e as Error).message); }
   };
   const R = run?.result;
@@ -45,14 +45,14 @@ export default function StrategyLab() {
             <div className="field"><label>עמלה להוראה ($)</label><input className="input num" type="number" step="0.01" min={0} value={form.feePerOrder} onChange={(e) => setForm({ ...form, feePerOrder: Number(e.target.value) })} style={{ maxWidth: 100 }} /></div>
           </div>
           <label className="small row"><input type="checkbox" checked={form.walkForward} onChange={(e) => setForm({ ...form, walkForward: e.target.checked })} /> כולל Walk-Forward (איטי יותר, ~2–5 דק׳)</label>
-          <div className="row" style={{ marginTop: 10 }}><button className="btn primary" onClick={start}>הרץ</button>{msg && <span className="small">{msg}</span>}</div>
+          <div className="row" style={{ marginTop: 10 }}><button className="btn primary" onClick={() => start('single')}>הרץ בדיקה (v1)</button><button className="btn" onClick={() => start('compare')}>השווה 6 אסטרטגיות</button>{msg && <span className="small">{msg}</span>}</div>
         </div>
         <div className="card">
           <h2>בדיקות קודמות</h2>
-          <div className="table-wrap"><table><thead><tr><th>#</th><th>מתי</th><th>סטטוס</th><th>אסטרטגיה</th><th>SPY</th></tr></thead><tbody>
+          <div className="table-wrap"><table><thead><tr><th>#</th><th>סוג</th><th>מתי</th><th>סטטוס</th><th>אסטרטגיה</th><th>SPY</th></tr></thead><tbody>
             {data?.runs?.map((r: any) => (
               <tr key={r.id} onClick={() => setSel(r.id)} style={{ cursor: 'pointer', background: r.id === runId ? 'var(--panel-2)' : undefined }}>
-                <td>{r.id}</td><td>{dt(r.created_at)}</td>
+                <td>{r.id}</td><td>{r.kind === 'compare' ? 'השוואה' : 'v1'}</td><td>{dt(r.created_at)}</td>
                 <td>{r.status === 'done' ? 'הסתיים' : r.status === 'error' ? <span className="neg">שגיאה</span> : <span className="muted">{r.progress ?? r.status}</span>}</td>
                 <td className="num">{r.ret != null ? `${r.ret}%` : '—'}</td><td className="num">{r.bench != null ? `${r.bench}%` : '—'}</td>
               </tr>
@@ -62,7 +62,8 @@ export default function StrategyLab() {
       </div>
 
       {run?.status === 'error' && <div className="banner danger">הבדיקה נכשלה: {run.error}</div>}
-      {R && (
+      {R?.kind === 'compare' && <CompareView R={R} id={run.id} />}
+      {R && R.kind !== 'compare' && (
         <>
           <div className="card" style={{ marginBottom: 14 }}>
             <h2>בדיקה #{run.id}: {R.period.start} → {R.period.end} · {R.strategyVersion}</h2>
@@ -150,5 +151,51 @@ export default function StrategyLab() {
         </>
       )}
     </Shell>
+  );
+}
+
+function CompareView({ R, id }: { R: any; id: number }) {
+  const [pick, setPick] = useState<string>(R.variants[0].id);
+  const v = R.variants.find((x: any) => x.id === pick);
+  const cell = (m: any, b: any, key: string, lowBetter = false) => {
+    const sv = m?.[key], bv = b?.[key];
+    const win = sv != null && bv != null ? (lowBetter ? sv < bv : sv > bv) : null;
+    return <td className={`num ${win == null ? '' : win ? 'pos' : 'neg'}`}>{sv == null ? '—' : key === 'sharpe' ? sv : `${sv}%`}</td>;
+  };
+  const spy = R.variants[0];
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h2>השוואה #{id}: {R.period.start} → {R.period.end} · Hold-out מ-{R.holdoutStart}</h2>
+        <div className="table-wrap"><table>
+          <thead><tr><th>אסטרטגיה</th><th>פיתוח: תשואה</th><th>פיתוח: DD</th><th>Hold-out: תשואה</th><th>Hold-out: DD</th><th>Sharpe (מלא)</th><th>ממוצע $/חודש</th></tr></thead>
+          <tbody>
+            {R.variants.map((x: any) => (
+              <tr key={x.id} onClick={() => setPick(x.id)} style={{ cursor: 'pointer', background: x.id === pick ? 'var(--panel-2)' : undefined }}>
+                <td><b>{x.name}</b></td>
+                {cell(x.development.strategy, x.development.benchmark, 'totalReturnPct')}
+                {cell(x.development.strategy, x.development.benchmark, 'maxDrawdownPct', true)}
+                {cell(x.holdout.strategy, x.holdout.benchmark, 'totalReturnPct')}
+                {cell(x.holdout.strategy, x.holdout.benchmark, 'maxDrawdownPct', true)}
+                {cell(x.full.strategy, x.full.benchmark, 'sharpe')}
+                <td className="num">{usd(x.avgMonthlyUsd)}</td>
+              </tr>
+            ))}
+            <tr className="muted"><td>SPY קנה והחזק (100%)</td><td className="num">{spy.development.benchmark.totalReturnPct}%</td><td className="num">{spy.development.benchmark.maxDrawdownPct}%</td>
+              <td className="num">{spy.holdout.benchmark.totalReturnPct}%</td><td className="num">{spy.holdout.benchmark.maxDrawdownPct}%</td><td className="num">{spy.full.benchmark.sharpe ?? '—'}</td><td /></tr>
+          </tbody>
+        </table></div>
+        <p className="muted small">ירוק = טוב מ-SPY באותה תקופה (בתשואה: גבוה יותר; ב-DD: נמוך יותר). לחץ על שורה לגרף.</p>
+      </div>
+      {v && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h2>{v.name}</h2>
+          <p className="small">{v.desc}</p>
+          <EquityChart series={v.curve} benchLabel="SPY קנה והחזק (אותו הון)" />
+          <p className="muted small">עסקאות: {v.full.trades.trades} · Win Rate {v.full.trades.winRatePct ?? '—'}% · PF {v.full.trades.profitFactor ?? '—'}</p>
+        </div>
+      )}
+      <div className="card"><h2>הערות מתודולוגיות</h2><ul className="clean small">{R.notes.map((n: string) => <li key={n}>{n}</li>)}</ul></div>
+    </>
   );
 }

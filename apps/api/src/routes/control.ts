@@ -134,7 +134,7 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
   app.get('/api/backtests', { preHandler: requireAuth }, async () => {
     const [rows] = await getPool().query<Row[]>(
       `SELECT id, status, config, progress, error, created_at, finished_at,
-        JSON_EXTRACT(result, '$.summary.strategy.totalReturnPct') AS ret, JSON_EXTRACT(result, '$.summary.benchmark.totalReturnPct') AS bench
+        JSON_EXTRACT(result, '$.summary.strategy.totalReturnPct') AS ret, JSON_EXTRACT(result, '$.summary.benchmark.totalReturnPct') AS bench, JSON_UNQUOTE(JSON_EXTRACT(config, '$.kind')) AS kind
        FROM backtest_runs ORDER BY id DESC LIMIT 30`,
     );
     return { runs: rows.map((r) => ({ ...r, config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config })) };

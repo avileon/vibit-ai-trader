@@ -125,3 +125,41 @@ describe('live round trips (FIFO)', () => {
     expect(t[1]).toMatchObject({ qty: 1, pnl: -1 });
   });
 });
+
+import { runAllocation, spyTrendSignal, sectorRotationSignal } from '../src/backtest/allocation.js';
+import { runCompare } from '../src/backtest/compare.js';
+
+describe('allocation strategies', () => {
+  const allocCfg = (bars: Record<string, DailyBar[]>, over = {}) => ({
+    start: bars.SPY[250].t.slice(0, 10), end: bars.SPY.at(-1)!.t.slice(0, 10), capital: 1000, slippageBps: 5, feePerOrder: 0.02,
+    benchmark: 'SPY', maxGrossExposure: 0.6, maxWeightPerAsset: 0.6, rebalance: 'on_change' as const, fractional: true, ...over,
+  });
+  it('SPY trend: invested in uptrend, capped at 60%, cash in downtrend', () => {
+    const up = { SPY: makeBars(600, 300, 0.001, END) };
+    const r = runAllocation(up, allocCfg(up), spyTrendSignal('SPY'));
+    const late = r.equity.at(-1)!;
+    expect(late.exposure / late.equity).toBeGreaterThan(0.5);
+    expect(late.exposure / late.equity).toBeLessThan(0.65);
+    const down = { SPY: makeBars(600, 300, -0.001, END) };
+    const r2 = runAllocation(down, allocCfg(down), spyTrendSignal('SPY'));
+    expect(r2.equity.every((p) => p.exposure === 0)).toBe(true);
+  });
+  it('signal at close t executes at open t+1 (first day is never invested)', () => {
+    const up = { SPY: makeBars(600, 300, 0.001, END) };
+    const r = runAllocation(up, allocCfg(up), spyTrendSignal('SPY'));
+    expect(r.equity[0].exposure).toBe(0);
+    expect(r.equity[1].exposure).toBeGreaterThan(0);
+  });
+  it('sector rotation holds the strongest uptrending sectors only', () => {
+    const b = { SPY: makeBars(600, 300, 0.0005, END), XLK: makeBars(600, 50, 0.002, END), XLE: makeBars(600, 50, 0.001, END), XLU: makeBars(600, 50, -0.001, END) };
+    const r = runAllocation(b, allocCfg(b, { rebalance: 'monthly', maxGrossExposure: 1, maxWeightPerAsset: 1 / 3 }), sectorRotationSignal(['XLK', 'XLE', 'XLU'], 3));
+    expect(r.trades.some((t) => t.symbol === 'XLU')).toBe(false);
+    expect(r.equity.at(-1)!.exposure / r.equity.at(-1)!.equity).toBeGreaterThan(0.6); // 2 of 3 slots
+  });
+  it('compare runs all pre-registered variants with dev/holdout split', () => {
+    const bars = data();
+    const c = runCompare(bars, { start: bars.SPY[260].t.slice(0, 10), end: bars.SPY.at(-1)!.t.slice(0, 10), capital: 1000, limits: DEFAULT_RISK_LIMITS, slippageBps: 5, feePerOrder: 0.02, universe: ['UP', 'FLAT'], benchmark: 'SPY' });
+    expect(c.variants).toHaveLength(6);
+    for (const v of c.variants) { expect(v.full).toBeTruthy(); expect(v.holdout.strategy.days).toBeGreaterThan(0); }
+  });
+});

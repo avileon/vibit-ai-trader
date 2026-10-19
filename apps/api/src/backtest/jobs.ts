@@ -8,15 +8,20 @@ import { BENCHMARK, UNIVERSE } from '../strategy/universe.js';
 import { addDays, ensureBars, loadBars } from './data.js';
 import { Worker } from 'node:worker_threads';
 import { fullReport } from './report.js';
+import { runCompare } from './compare.js';
+import { SECTORS } from './allocation.js';
 import type { BacktestConfig } from './engine.js';
 import type { DailyBar } from '../strategy/indicators.js';
 
 /** In production (compiled .js) run in a worker thread; under tsx/tests run inline. */
-function runReport(bars: Record<string, DailyBar[]>, cfg: BacktestConfig, wf: boolean, progress: (s: string) => void): Promise<ReturnType<typeof fullReport>> {
-  if (!import.meta.url.endsWith('.js')) return Promise.resolve(fullReport(bars, cfg, wf, progress));
+function runReport(bars: Record<string, DailyBar[]>, cfg: BacktestConfig, wf: boolean, progress: (s: string) => void, kind: 'single' | 'compare' = 'single'): Promise<any> {
+  const inline = () => kind === 'compare'
+    ? runCompare(bars, { start: cfg.start, end: cfg.end, capital: cfg.capital, limits: cfg.limits, slippageBps: cfg.slippageBps, feePerOrder: cfg.feePerOrder, universe: cfg.universe, benchmark: cfg.benchmark }, progress)
+    : fullReport(bars, cfg, wf, progress);
+  if (!import.meta.url.endsWith('.js')) return Promise.resolve(inline());
   return new Promise((resolve, reject) => {
-    const w = new Worker(new URL('./thread.js', import.meta.url), { workerData: { bars, cfg, withWalkForward: wf } });
-    w.on('message', (m: { type: string; s?: string; report?: ReturnType<typeof fullReport> }) => {
+    const w = new Worker(new URL('./thread.js', import.meta.url), { workerData: { bars, cfg, withWalkForward: wf, kind } });
+    w.on('message', (m: { type: string; s?: string; report?: unknown }) => {
       if (m.type === 'progress') progress(m.s!);
       if (m.type === 'done') resolve(m.report!);
     });
@@ -31,6 +36,7 @@ export const backtestRequestSchema = z.object({
   slippageBps: z.number().min(0).max(100).default(5),
   feePerOrder: z.number().min(0).max(5).default(0.02),
   walkForward: z.boolean().default(true),
+  kind: z.enum(['single', 'compare']).default('single'),
 });
 export type BacktestRequest = z.infer<typeof backtestRequestSchema>;
 
@@ -53,7 +59,7 @@ export async function runNextBacktest(broker: BrokerTrader): Promise<number | nu
     const yesterday = addDays(new Date().toISOString().slice(0, 10), -1);
     const end = req.end && req.end < yesterday ? req.end : yesterday;
     const dataFrom = addDays(req.start, -400); // warm-up for SMA200 / momentum
-    const symbols = [...UNIVERSE, BENCHMARK];
+    const symbols = Array.from(new Set([...UNIVERSE, ...SECTORS, BENCHMARK]));
     await ensureBars(broker, symbols, dataFrom < '2016-01-01' ? '2016-01-01' : dataFrom, yesterday, progress);
     const bars = await loadBars(symbols, '2015-01-01', yesterday);
     const { limits } = await currentLimits();
@@ -61,7 +67,7 @@ export async function runNextBacktest(broker: BrokerTrader): Promise<number | nu
     const report = await runReport(bars, {
       start: req.start, end, capital: limits.capitalBaseUsd, limits, params: STRATEGY_PARAMS, slippageBps: req.slippageBps,
       feePerOrder: req.feePerOrder, maxChase: 0.02, universe: [...UNIVERSE], benchmark: BENCHMARK, haltOnDrawdown: true,
-    }, req.walkForward, progress);
+    }, req.walkForward, progress, req.kind);
     const result = {
       strategyVersion: STRATEGY_VERSION, params: STRATEGY_PARAMS, period: { start: req.start, end }, dataFeed: 'SIP (Alpaca), adjusted for splits+dividends',
       assumptions: {
@@ -75,6 +81,7 @@ export async function runNextBacktest(broker: BrokerTrader): Promise<number | nu
         'בדיקה היסטורית אינה תחזית. שווקים משתנים; תוצאה טובה בעבר לא מבטיחה עתיד.',
         'מסחר אמיתי כולל עיכובים, מילוי חלקי ופערים שהסימולציה לא תופסת במלואם.',
       ],
+      kind: req.kind,
       ...report,
     };
     await pool.query("UPDATE backtest_runs SET status='done', result=?, progress='הסתיים', finished_at=UTC_TIMESTAMP() WHERE id=?", [JSON.stringify(result), id]);

@@ -121,6 +121,59 @@ d('API integration (MySQL)', () => {
     expect(r.statusCode).toBe(404);
   });
 
+  it('broker sync (mock): mirrors account, positions, orders incl. legs, clock', async () => {
+    const { MockBroker } = await import('./mockBroker.js');
+    const { syncBroker } = await import('../src/broker/sync.js');
+    const { getPool } = await import('../src/db/pool.js');
+    const b = new MockBroker();
+    const r = await syncBroker(b);
+    expect(r.ok).toBe(true);
+    expect(r.positions).toBe(2);
+    expect(r.orders).toBe(4); // 2 parents + 2 legs
+    const [pos] = await getPool().query<mysql.RowDataPacket[]>("SELECT symbol, stop_price FROM positions WHERE source='alpaca' ORDER BY symbol");
+    expect(pos.map((p) => p.symbol)).toEqual(['XLE', 'XLF']);
+    expect(pos.find((p) => p.symbol === 'XLF')!.stop_price).toBe(38); // from bracket stop leg
+    const [ord] = await getPool().query<mysql.RowDataPacket[]>("SELECT client_order_id, reason FROM orders WHERE source='alpaca' AND client_order_id='manual-abc'");
+    expect(ord[0].reason).toMatch(/מחוץ למערכת/);
+    const d = (await app.inject({ url: '/api/dashboard', headers: { cookie } })).json();
+    expect(d.source).toBe('alpaca');
+    expect(d.isDemo).toBe(false);
+    expect(d.market.source).toBe('alpaca');
+    expect(d.summary.equity).toBe(1012.5);
+    expect(d.series.length).toBeGreaterThanOrEqual(3); // backfill (2 non-zero) + live snapshot
+  });
+
+  it('broker sync reconciles: closed position disappears, order status updates (idempotent)', async () => {
+    const { MockBroker } = await import('./mockBroker.js');
+    const { syncBroker } = await import('../src/broker/sync.js');
+    const { getPool } = await import('../src/db/pool.js');
+    const b = new MockBroker();
+    b.positions = b.positions.filter((p) => p.symbol !== 'XLE');
+    b.orders[0].legs![1].status = 'canceled';
+    await syncBroker(b);
+    await syncBroker(b);
+    const [pos] = await getPool().query<mysql.RowDataPacket[]>("SELECT symbol FROM positions WHERE source='alpaca'");
+    expect(pos.map((p) => p.symbol)).toEqual(['XLF']);
+    const [o] = await getPool().query<mysql.RowDataPacket[]>("SELECT COUNT(*) c FROM orders WHERE source='alpaca'");
+    expect(Number(o[0].c)).toBe(4);
+    const [leg] = await getPool().query<mysql.RowDataPacket[]>("SELECT status FROM orders WHERE alpaca_order_id='ord-1-sl'");
+    expect(leg[0].status).toBe('canceled');
+  });
+
+  it('broker sync refuses a non-paper account and marks error', async () => {
+    const { MockBroker } = await import('./mockBroker.js');
+    const { syncBroker } = await import('../src/broker/sync.js');
+    const b = new MockBroker();
+    b.account = { ...b.account, account_number: '987654' };
+    const r = await syncBroker(b);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not_paper/);
+    const st = (await app.inject({ url: '/api/broker', headers: { cookie } })).json();
+    expect(st.status).toBe('error');
+    const d = (await app.inject({ url: '/api/dashboard', headers: { cookie } })).json();
+    expect(d.isDemo).toBe(true); // falls back to demo view when broker not ok
+  });
+
   it('logout revokes the session', async () => {
     await app.inject({ method: 'POST', url: '/api/auth/logout', headers: { ...H, cookie } });
     expect((await app.inject({ url: '/api/auth/me', headers: { cookie } })).statusCode).toBe(401);

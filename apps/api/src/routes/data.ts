@@ -13,6 +13,26 @@ async function resolveSource(requested?: 'demo' | 'alpaca'): Promise<'demo' | 'a
   return s[0]?.broker_status === 'ok' ? 'alpaca' : 'demo';
 }
 
+const fmtIL = (d: Date) => new Intl.DateTimeFormat('he-IL', { timeZone: 'Asia/Jerusalem', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
+
+/** Alpaca clock if checked in the last 10 minutes; otherwise the labelled estimate. */
+function marketFromState(st: Row) {
+  const est = estimateMarketSession();
+  const fresh = st.clock_checked_at && Date.now() - new Date(st.clock_checked_at).getTime() < 10 * 60_000;
+  if (!fresh || st.market_is_open == null) return est;
+  const nextOpen = new Date(st.market_next_open), nextClose = new Date(st.market_next_close);
+  // if the stored next_close has passed, the clock is stale for this purpose
+  const isOpen = !!st.market_is_open && nextClose.getTime() > Date.now();
+  return {
+    ...est,
+    isOpen,
+    source: 'alpaca' as const,
+    nextOpenIL: fmtIL(nextOpen),
+    nextCloseIL: fmtIL(nextClose),
+    note: 'לפי שעון Alpaca (כולל חגים וימים מקוצרים).',
+  };
+}
+
 function workerAlive(hb: Date | null): boolean {
   return !!hb && Date.now() - new Date(hb).getTime() < 3 * 60_000;
 }
@@ -64,7 +84,9 @@ export function registerDataRoutes(app: FastifyInstance) {
         workerHeartbeatAt: st.worker_heartbeat_at,
       },
       broker: { status: st.broker_status, checkedAt: st.broker_checked_at, message: st.broker_message },
-      market: estimateMarketSession(),
+      market: marketFromState(st),
+      account: st.account_meta ? (typeof st.account_meta === 'string' ? JSON.parse(st.account_meta) : st.account_meta) : null,
+      lastSyncAt: st.last_sync_at,
       ilsRate,
     };
   });

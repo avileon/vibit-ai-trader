@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import Shell from '@/components/Shell';
+import BrokerCard from '@/components/BrokerCard';
 import { api, dt, useApi } from '@/lib/api';
 
 const SECRET_LABEL: Record<string, string> = {
@@ -14,7 +15,7 @@ function SecretRow({ s, onSaved }: { s: any; onSaved: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
   const save = async () => {
     setMsg(null);
-    try { await api(`/api/secrets/${s.name}`, { method: 'PUT', body: JSON.stringify({ value: v }) }); setV(''); onSaved(); setMsg('נשמר מוצפן'); }
+    try { await api(`/api/secrets/${s.name}`, { method: 'PUT', body: JSON.stringify({ value: v.trim() }) }); setV(''); onSaved(); setMsg('נשמר מוצפן'); }
     catch (e) { setMsg((e as Error).message); }
   };
   return (
@@ -47,6 +48,7 @@ export default function Settings() {
     <Shell title="הגדרות">
       {data && (
         <div className="grid two">
+          <BrokerCard />
           <div className="card">
             <h2>סביבת מסחר</h2>
             <p className="small">מצב: <b>Paper בלבד</b> · כתובת: <span className="num">{data.brokerUrl}</span></p>
@@ -71,7 +73,7 @@ export default function Settings() {
               אל תשתף מפתחות בצ׳אט, באימייל או ב-Git. אפשר במקום זה להגדיר אותם בקובץ <span className="num">.env</span> בשרת.
             </p>
             {data.secrets.map((s: any) => <SecretRow key={s.name} s={s} onSaved={reload} />)}
-            <p className="muted small" style={{ marginBottom: 0 }}>בדיקת חיבור בפועל ל-Alpaca תתווסף בשלב ג.</p>
+            <p className="muted small" style={{ marginBottom: 0 }}>אחרי שמירת שני מפתחות Alpaca — לחץ "בדוק וסנכרן עכשיו" למעלה.</p>
           </div>
 
           <div className="card">

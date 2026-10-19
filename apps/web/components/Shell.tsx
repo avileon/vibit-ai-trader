@@ -75,7 +75,7 @@ export function DemoBanner({ show }: { show: boolean }) {
     <div className="banner demo">
       <span className="demo-badge">DEMO</span>{' '}
       הנתונים במסך הם <b>נתוני הדגמה בדויים</b> (סמלים DEMO-A/B/C). הם לא מחירי שוק ולא תוצאות של הבוט.
-      נתונים אמיתיים יופיעו אחרי חיבור Alpaca Paper (שלב ג).
+      נתונים אמיתיים יופיעו אחרי הזנת מפתחות Alpaca Paper בהגדרות ובדיקת חיבור.
     </div>
   );
 }

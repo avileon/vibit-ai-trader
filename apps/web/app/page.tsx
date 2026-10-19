@@ -4,7 +4,7 @@ import EquityChart from '@/components/EquityChart';
 import { dt, ils, signedUsd, tone, usd, useApi } from '@/lib/api';
 
 const MODE_LABEL: Record<string, string> = { SAFE: 'מצב בטוח — לא פותח עסקאות', ACTIVE: 'פעיל', HALTED: 'עצור (Kill Switch)' };
-const BROKER_LABEL: Record<string, string> = { not_configured: 'לא מחובר (שלב ג)', ok: 'מחובר — Paper', error: 'שגיאת חיבור', unknown: 'לא ידוע' };
+const BROKER_LABEL: Record<string, string> = { not_configured: 'לא הוגדרו מפתחות (הגדרות)', ok: 'מחובר — Paper', error: 'שגיאת חיבור', unknown: 'לא ידוע' };
 
 function Stat({ label, value, sub, cls = '' }: { label: string; value: string; sub?: string | null; cls?: string }) {
   return (
@@ -56,6 +56,7 @@ export default function Dashboard() {
                   <span className="pill"><span className={`dot ${data.broker.status === 'ok' ? 'ok' : data.broker.status === 'error' ? 'bad' : 'warn'}`} />{BROKER_LABEL[data.broker.status]}</span></div>
                 <div className="row"><span className="muted" style={{ width: 120 }}>מצב בוט</span>
                   <span className="pill"><span className={`dot ${data.bot.mode === 'ACTIVE' ? 'ok' : data.bot.mode === 'HALTED' ? 'bad' : 'warn'}`} />{MODE_LABEL[data.bot.mode]}</span></div>
+                {data.lastSyncAt && <div className="row"><span className="muted" style={{ width: 120 }}>סנכרון אחרון</span><span className="small">{dt(data.lastSyncAt)}</span></div>}
                 <div className="row"><span className="muted" style={{ width: 120 }}>מנוע (Worker)</span>
                   <span className="pill"><span className={`dot ${data.bot.workerAlive ? 'ok' : 'bad'}`} />{data.bot.workerAlive ? 'רץ' : 'לא מגיב'}</span>
                   <span className="muted small">דופק אחרון: {dt(data.bot.workerHeartbeatAt)}</span></div>
@@ -67,7 +68,11 @@ export default function Dashboard() {
                 <span className="pill"><span className={`dot ${data.market.isOpen ? 'ok' : 'warn'}`} />{data.market.isOpen ? 'השוק פתוח' : 'השוק סגור'}</span>
               </div>
               <div className="small">שעה בניו יורק: <span className="num">{data.market.nyTime}</span> · בישראל: <span className="num">{data.market.ilTime}</span></div>
-              <div className="small">מסחר רגיל היום (שעון ישראל): <span className="num">{data.market.opensAtIL}–{data.market.closesAtIL}</span></div>
+              {data.market.source === 'alpaca' ? (
+                <div className="small">{data.market.isOpen ? <>נסגר: <span className="num">{data.market.nextCloseIL}</span></> : <>נפתח: <span className="num">{data.market.nextOpenIL}</span></>} (שעון ישראל)</div>
+              ) : (
+                <div className="small">מסחר רגיל היום (שעון ישראל): <span className="num">{data.market.opensAtIL}–{data.market.closesAtIL}</span></div>
+              )}
               <p className="muted small" style={{ marginBottom: 0 }}>{data.market.note}</p>
             </div>
           </div>

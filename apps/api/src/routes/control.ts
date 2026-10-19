@@ -7,6 +7,7 @@ import { audit } from '../lib/audit.js';
 import { encryptSecret, maskSecret } from '../lib/crypto.js';
 import { assertLooksLikePaperKey, PaperGuardError, ALPACA_PAPER_TRADING_URL } from '../lib/paperGuard.js';
 import { getSetting, setSetting } from '../lib/settings.js';
+import { runSync } from '../broker/index.js';
 import { killSwitchThreshold, riskBudgetPerTrade, riskLimitsSchema } from '../riskConfig.js';
 
 const ALLOWED_SECRETS = ['ALPACA_KEY_ID', 'ALPACA_SECRET_KEY', 'ANTHROPIC_API_KEY'] as const;
@@ -73,7 +74,7 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
     if (b.data.mode === 'ACTIVE') {
       const blockers: string[] = [];
       if (st[0].kill_switch) blockers.push('Kill Switch פעיל');
-      if (st[0].broker_status !== 'ok') blockers.push('אין חיבור מאומת ל-Alpaca Paper (שלב ג)');
+      if (st[0].broker_status !== 'ok') blockers.push('אין חיבור מאומת ל-Alpaca Paper');
       if (!st[0].worker_heartbeat_at || Date.now() - new Date(st[0].worker_heartbeat_at).getTime() > 180_000) blockers.push('ה-Worker לא פעיל');
       blockers.push('מנוע האסטרטגיה והסיכון טרם הותקן (שלב ד)');
       await audit(req.user!.email, 'bot.activate_denied', { blockers }, req.ip);
@@ -82,6 +83,25 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
     await getPool().query("UPDATE bot_state SET mode = 'SAFE' WHERE id = 1 AND kill_switch = 0");
     await audit(req.user!.email, 'bot.mode_safe', null, req.ip);
     return { ok: true };
+  });
+
+  // ---------- Broker ----------
+  app.get('/api/broker', { preHandler: requireAuth }, async () => {
+    const [st] = await getPool().query<Row[]>(
+      'SELECT broker_status, broker_message, broker_checked_at, account_meta, last_sync_at, sync_error, market_is_open, market_next_open, market_next_close FROM bot_state WHERE id = 1',
+    );
+    const r = st[0];
+    return {
+      status: r.broker_status, message: r.broker_message, checkedAt: r.broker_checked_at, lastSyncAt: r.last_sync_at, syncError: r.sync_error,
+      account: r.account_meta ? (typeof r.account_meta === 'string' ? JSON.parse(r.account_meta) : r.account_meta) : null,
+      capitalBaseUsd: cfg.CAPITAL_BASE_USD,
+    };
+  });
+
+  app.post('/api/broker/sync', { preHandler: requireAdmin, config: { rateLimit: { max: 6, timeWindow: '1 minute' } } }, async (req) => {
+    const r = await runSync(cfg);
+    await audit(req.user!.email, 'broker.manual_sync', { ok: r.ok, configured: r.configured }, req.ip);
+    return r;
   });
 
   // ---------- Settings ----------

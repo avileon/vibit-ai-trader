@@ -7,7 +7,7 @@ import { audit } from '../lib/audit.js';
 import { encryptSecret, maskSecret } from '../lib/crypto.js';
 import { assertLooksLikePaperKey, PaperGuardError, ALPACA_PAPER_TRADING_URL } from '../lib/paperGuard.js';
 import { getSetting, setSetting } from '../lib/settings.js';
-import { runSync } from '../broker/index.js';
+import { buildBrokerClient, runSync } from '../broker/index.js';
 import { killSwitchThreshold, riskBudgetPerTrade, riskLimitsSchema } from '../riskConfig.js';
 
 const ALLOWED_SECRETS = ['ALPACA_KEY_ID', 'ALPACA_SECRET_KEY', 'ANTHROPIC_API_KEY'] as const;
@@ -66,23 +66,57 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
     return { ok: true, mode: 'SAFE' };
   });
 
-  const modeBody = z.object({ mode: z.enum(['SAFE', 'ACTIVE']) });
+  const modeBody = z.object({ mode: z.enum(['SAFE', 'ACTIVE']), confirm: z.string().optional() });
   app.post('/api/bot/mode', { preHandler: requireAdmin }, async (req, reply) => {
     const b = modeBody.safeParse(req.body);
     if (!b.success) return reply.code(400).send({ error: 'invalid_input' });
-    const [st] = await getPool().query<Row[]>('SELECT kill_switch, broker_status, worker_heartbeat_at FROM bot_state WHERE id = 1');
+    const [st] = await getPool().query<Row[]>('SELECT kill_switch, broker_status, worker_heartbeat_at, last_sync_at FROM bot_state WHERE id = 1');
     if (b.data.mode === 'ACTIVE') {
       const blockers: string[] = [];
       if (st[0].kill_switch) blockers.push('Kill Switch פעיל');
       if (st[0].broker_status !== 'ok') blockers.push('אין חיבור מאומת ל-Alpaca Paper');
       if (!st[0].worker_heartbeat_at || Date.now() - new Date(st[0].worker_heartbeat_at).getTime() > 180_000) blockers.push('ה-Worker לא פעיל');
-      blockers.push('מנוע האסטרטגיה והסיכון טרם הותקן (שלב ד)');
-      await audit(req.user!.email, 'bot.activate_denied', { blockers }, req.ip);
-      return reply.code(409).send({ error: 'blocked', blockers });
+      if (!st[0].last_sync_at || Date.now() - new Date(st[0].last_sync_at).getTime() > 300_000) blockers.push('אין סנכרון עדכני מהברוקר');
+      if (b.data.confirm !== 'הפעל Paper') blockers.push('יש להקליד "הפעל Paper" לאישור');
+      if (blockers.length) {
+        await audit(req.user!.email, 'bot.activate_denied', { blockers }, req.ip);
+        return reply.code(409).send({ error: 'blocked', blockers });
+      }
+      await getPool().query("UPDATE bot_state SET mode = 'ACTIVE' WHERE id = 1 AND kill_switch = 0");
+      await audit(req.user!.email, 'bot.mode_active', null, req.ip);
+      return { ok: true, mode: 'ACTIVE' };
     }
     await getPool().query("UPDATE bot_state SET mode = 'SAFE' WHERE id = 1 AND kill_switch = 0");
     await audit(req.user!.email, 'bot.mode_safe', null, req.ip);
     return { ok: true };
+  });
+
+  const flattenBody = z.object({ confirm: z.literal('סגור הכל') });
+  app.post('/api/risk/flatten', { preHandler: requireAdmin, config: { rateLimit: { max: 3, timeWindow: '1 minute' } } }, async (req, reply) => {
+    if (!flattenBody.safeParse(req.body).success) return reply.code(400).send({ error: 'confirm_required', message: 'יש להקליד "סגור הכל"' });
+    const broker = await buildBrokerClient(cfg);
+    if (!broker) return reply.code(409).send({ error: 'no_broker' });
+    await getPool().query("UPDATE bot_state SET kill_switch = 1, mode = 'HALTED', kill_reason = 'סגירת כל הפוזיציות ידנית', kill_at = UTC_TIMESTAMP() WHERE id = 1");
+    await broker.closeAllPositions();
+    await audit(req.user!.email, 'risk.flatten_all', null, req.ip);
+    await runSync(cfg);
+    return { ok: true };
+  });
+
+  app.get('/api/engine', { preHandler: requireAuth }, async () => {
+    const [props] = await getPool().query<Row[]>(
+      `SELECT p.id, p.kind, p.symbol, p.side, p.qty, p.price_ref, p.stop_price, p.take_profit, p.rationale, p.strategy_version, p.status,
+              p.client_order_id, p.created_at, d.approved, d.checks
+       FROM trade_proposals p LEFT JOIN risk_decisions d ON d.proposal_id = p.id
+       WHERE p.source='engine' ORDER BY p.id DESC LIMIT 50`,
+    );
+    const [st] = await getPool().query<Row[]>('SELECT mode, engine_last_run_at, engine_message FROM bot_state WHERE id = 1');
+    const parse = (v: unknown) => (typeof v === 'string' ? JSON.parse(v) : v);
+    return {
+      mode: st[0].mode, lastRunAt: st[0].engine_last_run_at, message: st[0].engine_message,
+      report: await getSetting('engine_last_report', null),
+      proposals: props.map((p) => ({ ...p, rationale: parse(p.rationale), checks: p.checks ? parse(p.checks) : null })),
+    };
   });
 
   // ---------- Broker ----------

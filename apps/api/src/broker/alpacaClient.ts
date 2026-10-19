@@ -98,7 +98,35 @@ export type PortfolioHistory = z.infer<typeof portfolioHistorySchema>;
 
 export const barSchema = z.object({ t: z.string(), o: z.number(), h: z.number(), l: z.number(), c: z.number(), v: z.number() }).passthrough();
 export type Bar = z.infer<typeof barSchema>;
+const snapshotsSchema = z.record(z.object({
+  latestQuote: z.object({ ap: z.number(), bp: z.number(), t: z.string() }).passthrough().nullable().optional(),
+  latestTrade: z.object({ p: z.number(), t: z.string() }).passthrough().nullable().optional(),
+}).passthrough().nullable());
 const barsResponseSchema = z.object({ bars: z.record(z.array(barSchema)).nullable(), next_page_token: z.string().nullable().optional() }).passthrough();
+
+export interface NewOrder {
+  symbol: string;
+  qty: number;
+  side: 'buy' | 'sell';
+  type: 'market' | 'limit';
+  time_in_force: 'day' | 'gtc';
+  limit_price?: number;
+  order_class?: 'bracket';
+  take_profit?: { limit_price: number };
+  stop_loss?: { stop_price: number };
+  client_order_id: string;
+}
+
+export interface Quote { symbol: string; bid: number; ask: number; ts: Date; last: number | null }
+
+export interface BrokerTrader extends BrokerReader {
+  getBarsMulti(symbols: string[], start: string): Promise<Record<string, Bar[]>>;
+  getQuotes(symbols: string[]): Promise<Record<string, Quote>>;
+  submitOrder(o: NewOrder): Promise<AlpacaOrder>;
+  getOrderByClientId(clientOrderId: string): Promise<AlpacaOrder | null>;
+  cancelOrder(id: string): Promise<void>;
+  closeAllPositions(): Promise<void>;
+}
 
 export interface BrokerReader {
   getAccount(): Promise<AlpacaAccount>;
@@ -127,7 +155,7 @@ export function assertPaperAccount(acct: { account_number: string }): void {
   }
 }
 
-export class AlpacaClient implements BrokerReader {
+export class AlpacaClient implements BrokerTrader {
   private base: string;
   private data: string;
   private f: typeof fetch;
@@ -153,7 +181,13 @@ export class AlpacaClient implements BrokerReader {
     this.feed = o.feed ?? 'iex';
   }
 
-  private async request(url: string): Promise<unknown> {
+  /**
+   * GET requests retry on 429/5xx/network. Mutating requests (POST/DELETE) NEVER auto-retry —
+   * the executor resolves ambiguity by looking the order up by client_order_id (idempotency).
+   */
+  private async request(url: string, init: { method?: 'GET' | 'POST' | 'DELETE'; body?: unknown } = {}): Promise<unknown> {
+    const method = init.method ?? 'GET';
+    const retries = method === 'GET' ? this.maxRetries : 0;
     let attempt = 0;
     for (;;) {
       attempt++;
@@ -162,20 +196,25 @@ export class AlpacaClient implements BrokerReader {
       let res: Response;
       try {
         this.requestCount++;
-        res = await this.f(url, { method: 'GET', headers: this.headers, signal: ctrl.signal });
+        res = await this.f(url, {
+          method, signal: ctrl.signal,
+          headers: init.body !== undefined ? { ...this.headers, 'content-type': 'application/json' } : this.headers,
+          body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        });
       } catch (e) {
         clearTimeout(timer);
-        if (attempt <= this.maxRetries) { await this.sleep(this.backoff(attempt)); continue; }
+        if (attempt <= retries) { await this.sleep(this.backoff(attempt)); continue; }
         throw new BrokerError('network', `Network error calling ${new URL(url).pathname}: ${(e as Error).name}`);
       }
       clearTimeout(timer);
       if (res.ok) {
+        if (res.status === 204) return null;
         try { return await res.json(); } catch { throw new BrokerError('bad_response', `Invalid JSON from ${new URL(url).pathname}`); }
       }
       const path = new URL(url).pathname;
       if (res.status === 401 || res.status === 403) throw new BrokerError('auth', `Alpaca rejected the keys (${res.status}) on ${path}`, res.status);
       if (res.status === 429) {
-        if (attempt <= this.maxRetries) {
+        if (attempt <= retries) {
           const reset = Number(res.headers.get('x-ratelimit-reset'));
           const wait = reset > 0 ? Math.min(60_000, Math.max(1000, reset * 1000 - Date.now())) : this.backoff(attempt);
           await this.sleep(wait); continue;
@@ -183,7 +222,7 @@ export class AlpacaClient implements BrokerReader {
         throw new BrokerError('rate_limit', `Rate limited on ${path}`, 429);
       }
       if (res.status >= 500) {
-        if (attempt <= this.maxRetries) { await this.sleep(this.backoff(attempt)); continue; }
+        if (attempt <= retries) { await this.sleep(this.backoff(attempt)); continue; }
         throw new BrokerError('server', `Alpaca server error ${res.status} on ${path}`, res.status);
       }
       const text = (await res.text().catch(() => '')).slice(0, 200);
@@ -225,5 +264,59 @@ export class AlpacaClient implements BrokerReader {
     const q = new URLSearchParams({ symbols: symbol, timeframe: '1Day', start, feed: this.feed, adjustment: 'all', limit: '1000' });
     const r = this.parse(barsResponseSchema, await this.request(`${this.data}/v2/stocks/bars?${q}`), 'bars');
     return r.bars?.[symbol] ?? [];
+  }
+
+  async getBarsMulti(symbols: string[], start: string): Promise<Record<string, Bar[]>> {
+    const out: Record<string, Bar[]> = {};
+    let pageToken: string | null | undefined;
+    let pages = 0;
+    do {
+      const q = new URLSearchParams({ symbols: symbols.join(','), timeframe: '1Day', start, feed: this.feed, adjustment: 'all', limit: '10000' });
+      if (pageToken) q.set('page_token', pageToken);
+      const r = this.parse(barsResponseSchema, await this.request(`${this.data}/v2/stocks/bars?${q}`), 'bars');
+      for (const [sym, arr] of Object.entries(r.bars ?? {})) (out[sym] ??= []).push(...arr);
+      pageToken = r.next_page_token;
+      if (++pages > 50) throw new BrokerError('bad_response', 'Too many bar pages');
+    } while (pageToken);
+    return out;
+  }
+
+  async getQuotes(symbols: string[]): Promise<Record<string, Quote>> {
+    const q = new URLSearchParams({ symbols: symbols.join(','), feed: this.feed });
+    const raw = this.parse(snapshotsSchema, await this.request(`${this.data}/v2/stocks/snapshots?${q}`), 'snapshots');
+    const out: Record<string, Quote> = {};
+    for (const [sym, s] of Object.entries(raw)) {
+      if (!s?.latestQuote) continue;
+      out[sym] = { symbol: sym, bid: s.latestQuote.bp, ask: s.latestQuote.ap, ts: new Date(s.latestQuote.t), last: s.latestTrade?.p ?? null };
+    }
+    return out;
+  }
+
+  async submitOrder(o: NewOrder): Promise<AlpacaOrder> {
+    if (o.side === 'sell' && o.order_class === 'bracket') throw new BrokerError('client', 'Bracket sell (short) is not allowed');
+    return this.parse(orderSchema, await this.request(`${this.base}/v2/orders`, { method: 'POST', body: o }), 'order') as AlpacaOrder;
+  }
+
+  async getOrderByClientId(clientOrderId: string): Promise<AlpacaOrder | null> {
+    try {
+      const q = new URLSearchParams({ client_order_id: clientOrderId, nested: 'true' });
+      return this.parse(orderSchema, await this.request(`${this.base}/v2/orders:by_client_order_id?${q}`), 'order') as AlpacaOrder;
+    } catch (e) {
+      if (e instanceof BrokerError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  async cancelOrder(id: string): Promise<void> {
+    try {
+      await this.request(`${this.base}/v2/orders/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    } catch (e) {
+      if (e instanceof BrokerError && (e.status === 404 || e.status === 422)) return; // already gone / not cancelable
+      throw e;
+    }
+  }
+
+  async closeAllPositions(): Promise<void> {
+    await this.request(`${this.base}/v2/positions?cancel_orders=true`, { method: 'DELETE' });
   }
 }

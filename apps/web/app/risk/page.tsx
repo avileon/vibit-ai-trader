@@ -6,6 +6,7 @@ import { api, dt, usd, useApi } from '@/lib/api';
 const EVENT: Record<string, string> = {
   'bot.kill_switch_on': 'Kill Switch הופעל', 'bot.kill_switch_off': 'Kill Switch שוחרר → מצב בטוח',
   'bot.worker_start': 'המנוע הופעל מחדש (מצב בטוח)', 'bot.activate_denied': 'בקשת הפעלה נחסמה', 'bot.mode_safe': 'מעבר למצב בטוח',
+  'bot.mode_active': 'הופעל מסחר מדומה (ACTIVE)', 'risk.auto_kill_switch': 'Kill Switch אוטומטי (הפסד 5%)', 'risk.flatten_all': 'נסגרו כל הפוזיציות ידנית',
 };
 
 export default function Risk() {
@@ -14,6 +15,8 @@ export default function Risk() {
   const [confirm, setConfirm] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const [blockers, setBlockers] = useState<string[] | null>(null);
+  const [activate, setActivate] = useState('');
+  const [flatten, setFlatten] = useState('');
 
   const run = async (fn: () => Promise<any>) => {
     setMsg(null);
@@ -55,15 +58,29 @@ export default function Risk() {
               <ul className="clean small">
                 <li>Kill Switch <b>לא מוכר אוטומטית</b>. מכירה בלחץ בזמן תקלה עלולה להיות גרועה יותר.</li>
                 <li>פקודות הסטופ שכבר יושבות אצל Alpaca (GTC) <b>נשארות פעילות</b> ומגנות על הפוזיציה גם כשהשרת שלנו כבוי.</li>
-                <li>סגירה ידנית: ממסך Alpaca Paper → Positions → Close, או (בשלב ד) כפתור "סגור הכל" עם אישור כפול.</li>
+                <li>סגירה מיידית של הכל: הקלד <b>סגור הכל</b> ולחץ. נשלחות פקודות Market — המחיר בפועל עלול להיות גרוע (Slippage), ומחוץ לשעות המסחר הן יבוצעו רק בפתיחה.</li>
               </ul>
+              <div className="row">
+                <input className="input" style={{ maxWidth: 160 }} value={flatten} onChange={(e) => setFlatten(e.target.value)} placeholder="סגור הכל" />
+                <button className="btn danger" disabled={flatten !== 'סגור הכל'}
+                  onClick={() => run(() => api('/api/risk/flatten', { method: 'POST', body: JSON.stringify({ confirm: flatten }) }))}>סגור את כל הפוזיציות</button>
+              </div>
               {msg && <p className="error">{msg}</p>}
             </div>
 
             <div className="card">
               <h2>הפעלת הבוט</h2>
-              <p className="small">הבוט עולה תמיד ב<b>מצב בטוח</b> (גם אחרי קריסה). מעבר לפעיל דורש שכל התנאים יתקיימו:</p>
-              <button className="btn primary" onClick={() => run(() => api('/api/bot/mode', { method: 'POST', body: JSON.stringify({ mode: 'ACTIVE' }) }))}>בקש הפעלה</button>
+              <p className="small">הבוט עולה תמיד ב<b>מצב בטוח</b> (גם אחרי קריסה/עדכון). במצב פעיל המנוע רץ פעם ביום בין 17:00 ל-22:30 שעון ישראל (10:00–15:30 ניו יורק),
+                מציע עסקאות לפי האסטרטגיה, וכל הצעה עוברת את מנוע הסיכון לפני שליחה ל-Alpaca Paper.</p>
+              {data.state.mode === 'ACTIVE' ? (
+                <button className="btn" onClick={() => run(() => api('/api/bot/mode', { method: 'POST', body: JSON.stringify({ mode: 'SAFE' }) }))}>החזר למצב בטוח</button>
+              ) : (
+                <div className="row">
+                  <input className="input" style={{ maxWidth: 160 }} value={activate} onChange={(e) => setActivate(e.target.value)} placeholder="הפעל Paper" />
+                  <button className="btn primary" onClick={() => run(() => api('/api/bot/mode', { method: 'POST', body: JSON.stringify({ mode: 'ACTIVE', confirm: activate }) }))}>הפעל מסחר מדומה</button>
+                </div>
+              )}
+              <p className="muted small">להפעלה הקלד <b>הפעל Paper</b>. אפשר לחזור למצב בטוח בכל רגע.</p>
               {blockers && (
                 <div className="banner warn" style={{ marginTop: 12 }}>
                   ההפעלה נחסמה:
@@ -95,8 +112,13 @@ export default function Risk() {
           <div className="grid two">
             <div className="card">
               <h2>החלטות סיכון אחרונות</h2>
-              {data.decisions.length === 0 ? <p className="muted small">אין עדיין — המנוע ייבנה בשלב ד.</p> : (
-                <ul className="clean small">{data.decisions.map((d: any) => <li key={d.id}>{dt(d.created_at)} · {d.approved ? 'אושר' : 'נדחה'}</li>)}</ul>
+              {data.decisions.length === 0 ? <p className="muted small">אין עדיין — יופיעו אחרי הרצת מנוע ראשונה.</p> : (
+                <ul className="clean small">{data.decisions.map((d: any) => {
+                  const checks = typeof d.checks === 'string' ? JSON.parse(d.checks) : d.checks;
+                  const failed = (checks ?? []).filter((c: any) => !c.ok);
+                  return <li key={d.id}>{dt(d.created_at)} · הצעה #{d.proposal_id} · {d.approved ? <span className="pos">אושר</span> : <span className="neg">נדחה</span>}
+                    {failed.length > 0 && <span className="muted"> — {failed.map((c: any) => c.detail).join(' · ')}</span>}</li>;
+                })}</ul>
               )}
             </div>
             <div className="card">

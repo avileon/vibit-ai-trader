@@ -8,7 +8,7 @@ const NAV = [
   { href: '/portfolio', label: 'תיק השקעות', icon: '◫' },
   { href: '/orders', label: 'הוראות ועסקאות', icon: '⇄' },
   { href: '/risk', label: 'מרכז סיכונים', icon: '⛨' },
-  { href: '/analyst', label: 'AI Analyst', icon: '✦', soon: 'שלב ה' },
+  { href: '/analyst', label: 'ניתוח המנוע', icon: '✦' },
   { href: '/strategy', label: 'Strategy Lab', icon: '⚗', soon: 'שלב ו' },
   { href: '/reports', label: 'דוחות', icon: '▤', soon: 'שלב ו' },
   { href: '/learn', label: 'מרכז למידה', icon: '✎' },

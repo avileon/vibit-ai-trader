@@ -1,7 +1,7 @@
-import type { AlpacaAccount, AlpacaClock, AlpacaOrder, AlpacaPosition, Bar, BrokerReader, PortfolioHistory } from '../src/broker/alpacaClient.js';
+import { BrokerError, type AlpacaAccount, type AlpacaClock, type AlpacaOrder, type AlpacaPosition, type Bar, type BrokerTrader, type NewOrder, type PortfolioHistory, type Quote } from '../src/broker/alpacaClient.js';
 
 /** In-memory broker for tests — no network. Mutate the public fields to simulate state changes. */
-export class MockBroker implements BrokerReader {
+export class MockBroker implements BrokerTrader {
   account: AlpacaAccount = {
     account_number: 'PA1234567', status: 'ACTIVE', cash: 600, equity: 1012.5, last_equity: 1000, buying_power: 600,
     long_market_value: 412.5, pattern_day_trader: false, daytrade_count: 0, multiplier: 1, trading_blocked: false, account_blocked: false,
@@ -32,4 +32,39 @@ export class MockBroker implements BrokerReader {
   async getOrders() { this.calls.push('orders'); return this.orders; }
   async getPortfolioHistory() { this.calls.push('history'); return this.history; }
   async getDailyBars() { this.calls.push('bars'); return this.bars; }
+
+  // ---- trading side
+  barsMulti: Record<string, Bar[]> = {};
+  quoteTs = new Date();
+  submitMode: 'ok' | 'network_then_found' | 'network_not_found' | 'reject' = 'ok';
+  submitted: NewOrder[] = [];
+  canceled: string[] = [];
+  private seq = 100;
+  async getBarsMulti(symbols: string[]) {
+    this.calls.push('barsMulti');
+    return Object.fromEntries(symbols.filter((s) => this.barsMulti[s]).map((s) => [s, this.barsMulti[s]]));
+  }
+  async getQuotes(symbols: string[]): Promise<Record<string, Quote>> {
+    const out: Record<string, Quote> = {};
+    for (const s of symbols) {
+      const last = this.barsMulti[s]?.at(-1)?.c;
+      if (last) out[s] = { symbol: s, bid: +(last - 0.01).toFixed(2), ask: last, ts: this.quoteTs, last };
+    }
+    return out;
+  }
+  async submitOrder(o: NewOrder) {
+    if (this.orders.some((x) => x.client_order_id === o.client_order_id)) throw new BrokerError('client', 'client_order_id must be unique', 422);
+    if (this.submitMode === 'reject') throw new BrokerError('client', 'insufficient buying power', 422);
+    const order: AlpacaOrder = { id: `ord-${this.seq++}`, client_order_id: o.client_order_id, submitted_at: new Date().toISOString(), symbol: o.symbol,
+      side: o.side, type: o.type, order_class: o.order_class ?? '', time_in_force: o.time_in_force, qty: o.qty, filled_qty: 0,
+      limit_price: o.limit_price ?? null, stop_price: null, status: 'new',
+      legs: o.stop_loss ? [{ id: `ord-${this.seq++}`, client_order_id: `leg-${this.seq}`, symbol: o.symbol, side: 'sell', type: 'stop', time_in_force: 'gtc', qty: o.qty, filled_qty: 0, stop_price: o.stop_loss.stop_price, status: 'held' }] : null };
+    if (this.submitMode === 'network_then_found') { this.orders.push(order); this.submitted.push(o); throw new BrokerError('network', 'Network error calling /v2/orders: AbortError'); }
+    if (this.submitMode === 'network_not_found') throw new BrokerError('network', 'Network error calling /v2/orders: AbortError');
+    this.orders.push(order); this.submitted.push(o);
+    return order;
+  }
+  async getOrderByClientId(id: string) { return this.orders.find((o) => o.client_order_id === id) ?? null; }
+  async cancelOrder(id: string) { this.canceled.push(id); for (const o of this.orders) { if (o.id === id) o.status = 'canceled'; for (const l of o.legs ?? []) if (l.id === id) l.status = 'canceled'; } }
+  async closeAllPositions() { this.positions = []; }
 }

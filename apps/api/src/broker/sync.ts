@@ -154,13 +154,14 @@ export async function syncBroker(client: BrokerReader, now = new Date()): Promis
       status: acct.status, accountPrefix: acct.account_number.slice(0, 2), pdt: acct.pattern_day_trader ?? null,
       daytradeCount: acct.daytrade_count ?? null, multiplier: acct.multiplier ?? null, shortingEnabled: acct.shorting_enabled ?? null,
       tradingBlocked: acct.trading_blocked ?? null, accountBlocked: acct.account_blocked ?? null, equity: acct.equity,
+      lastEquity: acct.last_equity, cash: acct.cash, baseEquity,
     };
     const healthy = acct.status === 'ACTIVE' && !acct.trading_blocked && !acct.account_blocked;
     await pool.query(
-      `UPDATE bot_state SET broker_status=?, broker_checked_at=UTC_TIMESTAMP(), broker_message=?, market_is_open=?, market_next_open=?,
-         market_next_close=?, clock_checked_at=UTC_TIMESTAMP(), account_meta=?, last_sync_at=UTC_TIMESTAMP(), sync_error=NULL WHERE id=1`,
-      [healthy ? 'ok' : 'error', healthy ? 'Paper account active' : `Account status ${acct.status}${acct.trading_blocked ? ', trading blocked' : ''}`,
-        clock.is_open ? 1 : 0, new Date(clock.next_open), new Date(clock.next_close), JSON.stringify(meta)],
+      `UPDATE bot_state SET broker_status=?, broker_checked_at=?, broker_message=?, market_is_open=?, market_next_open=?,
+         market_next_close=?, clock_checked_at=?, account_meta=?, last_sync_at=?, sync_error=NULL WHERE id=1`,
+      [healthy ? 'ok' : 'error', now, healthy ? 'Paper account active' : `Account status ${acct.status}${acct.trading_blocked ? ', trading blocked' : ''}`,
+        clock.is_open ? 1 : 0, new Date(clock.next_open), new Date(clock.next_close), now, JSON.stringify(meta), now],
     );
     return {
       ok: healthy,

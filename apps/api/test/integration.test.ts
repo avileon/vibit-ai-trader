@@ -174,6 +174,117 @@ d('API integration (MySQL)', () => {
     expect(d.isDemo).toBe(true); // falls back to demo view when broker not ok
   });
 
+  describe('engine (mock broker)', () => {
+    const NOW = new Date('2026-10-20T14:30:00Z'); // Tue 10:30 New York
+    async function setup(mode: 'ACTIVE' | 'SAFE' = 'ACTIVE') {
+      const { MockBroker } = await import('./mockBroker.js');
+      const { makeBars } = await import('./fixtures.js');
+      const { getPool } = await import('../src/db/pool.js');
+      const b = new MockBroker();
+      b.positions = []; b.orders = [];
+      b.quoteTs = NOW;
+      b.barsMulti = { SPY: makeBars(260, 500, 0.001, NOW), XLF: makeBars(260, 30, 0.002, NOW), XLE: makeBars(260, 60, -0.002, NOW) };
+      await getPool().query("UPDATE bot_state SET mode=?, kill_switch=0, kill_reason=NULL, engine_last_run_day=NULL WHERE id=1", [mode]);
+      await getPool().query("DELETE FROM orders WHERE source='alpaca'");
+      return { b, pool: getPool() };
+    }
+
+    it('does nothing in SAFE mode', async () => {
+      const { b } = await setup('SAFE');
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      expect((await maybeRunDailyCycle(b, NOW)).ran).toBe(false);
+      expect(b.submitted).toHaveLength(0);
+    });
+
+    it('ACTIVE: proposes, risk-approves and submits ONE bracket order; logs decision', async () => {
+      const { b, pool } = await setup();
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.ran).toBe(true);
+      expect(rep.results, JSON.stringify(rep.results)).toEqual([expect.objectContaining({ symbol: 'XLF', kind: 'entry', status: 'submitted' })]);
+      expect(b.submitted).toHaveLength(1);
+      const o = b.submitted[0];
+      expect(o.order_class).toBe('bracket');
+      expect(o.side).toBe('buy');
+      expect(o.client_order_id).toBe('vibit-entry-XLF-20261020');
+      expect(o.stop_loss!.stop_price).toBeLessThan(o.limit_price!);
+      expect((o.limit_price! - o.stop_loss!.stop_price) * o.qty).toBeLessThanOrEqual(10.13); // 1% of virtual equity
+      expect(o.limit_price! * o.qty).toBeLessThanOrEqual(200);
+      const [d] = await pool.query<mysql.RowDataPacket[]>('SELECT approved FROM risk_decisions ORDER BY id DESC LIMIT 1');
+      expect(d[0].approved).toBe(1);
+      // second run the same day: no-op
+      expect((await maybeRunDailyCycle(b, NOW)).reason).toBe('already ran today');
+    });
+
+    it('idempotency: a forced re-run the same day never double-submits', async () => {
+      const { b } = await setup();
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      await maybeRunDailyCycle(b, NOW);
+      const again = await maybeRunDailyCycle(b, NOW, { force: true });
+      expect(b.submitted).toHaveLength(1);
+      expect(again.results!.every((r) => r.status !== 'submitted')).toBe(true);
+    });
+
+    it('network failure after the broker received the order → confirmed by lookup, not resubmitted', async () => {
+      const { b } = await setup();
+      b.submitMode = 'network_then_found';
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.results![0].status).toBe('submitted');
+      expect(b.submitted).toHaveLength(1);
+    });
+
+    it('network failure where the broker did NOT get it → marked failed, no blind retry', async () => {
+      const { b, pool } = await setup();
+      b.submitMode = 'network_not_found';
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.results![0].status).toBe('unknown_failed');
+      const [o] = await pool.query<mysql.RowDataPacket[]>("SELECT status FROM orders WHERE client_order_id='vibit-entry-XLF-20261020'");
+      expect(o[0].status).toBe('submit_failed');
+    });
+
+    it('broker rejection is recorded with the reason', async () => {
+      const { b, pool } = await setup();
+      b.submitMode = 'reject';
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.results![0].status).toBe('broker_rejected');
+      const [o] = await pool.query<mysql.RowDataPacket[]>("SELECT status, reason FROM orders WHERE client_order_id='vibit-entry-XLF-20261020'");
+      expect(o[0].status).toBe('rejected');
+      expect(o[0].reason).toMatch(/buying power/);
+    });
+
+    it('stale market data → risk engine blocks the order', async () => {
+      const { b } = await setup();
+      b.quoteTs = new Date(NOW.getTime() - 10 * 60_000);
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.results![0].status).toBe('rejected_by_risk');
+      expect(rep.results![0].message).toMatch(/quote_fresh/);
+      expect(b.submitted).toHaveLength(0);
+    });
+
+    it('auto kill switch when virtual equity falls to the threshold', async () => {
+      const { b } = await setup();
+      const { syncBroker } = await import('../src/broker/sync.js');
+      const { housekeeping } = await import('../src/engine/cycle.js');
+      b.account = { ...b.account, equity: 949 }; // base 1000 → virtual 949
+      await syncBroker(b);
+      const notes = await housekeeping(b);
+      expect(notes.join()).toMatch(/אוטומטי/);
+      const r = (await app.inject({ url: '/api/risk', headers: { cookie } })).json();
+      expect(r.state).toMatchObject({ mode: 'HALTED', killSwitch: true });
+    });
+
+    it('API exposes engine proposals with rationale and risk checks', async () => {
+      const r = (await app.inject({ url: '/api/engine', headers: { cookie } })).json();
+      expect(r.proposals.length).toBeGreaterThan(0);
+      expect(r.proposals[0].rationale.reasons.length).toBeGreaterThan(0);
+      expect(r.proposals[0].checks.length).toBeGreaterThan(10);
+    });
+  });
+
   it('logout revokes the session', async () => {
     await app.inject({ method: 'POST', url: '/api/auth/logout', headers: { ...H, cookie } });
     expect((await app.inject({ url: '/api/auth/me', headers: { cookie } })).statusCode).toBe(401);

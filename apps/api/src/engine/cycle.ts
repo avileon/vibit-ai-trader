@@ -1,6 +1,6 @@
 import { getPool } from '../db/pool.js';
 import { audit } from '../lib/audit.js';
-import { setSetting } from '../lib/settings.js';
+import { getSetting, setSetting } from '../lib/settings.js';
 import type { BrokerTrader } from '../broker/alpacaClient.js';
 import { syncBroker } from '../broker/sync.js';
 import { killSwitchThreshold, riskBudgetPerTrade } from '../riskConfig.js';
@@ -10,6 +10,13 @@ import { runStrategy, STRATEGY_VERSION } from '../strategy/momentumTrend.js';
 import { BENCHMARK, UNIVERSE } from '../strategy/universe.js';
 import { limitsWithVersion, loadEngineState, loadOpenOrders, loadPositions, virtualEquity } from './context.js';
 import { executeIntent, type ExecResult } from './executor.js';
+import { runSpyCycle } from './spyCycle.js';
+
+export type StrategyId = 'momentum-trend-v1' | 'spy-trend-v1';
+export async function activeStrategy(): Promise<StrategyId> {
+  const s = await getSetting<{ id?: string } | null>('active_strategy', null);
+  return s?.id === 'spy-trend-v1' ? 'spy-trend-v1' : 'momentum-trend-v1';
+}
 
 export const RUN_WINDOW = { fromNyMin: 10 * 60, toNyMin: 15 * 60 + 30 } as const;
 const STALE_ENTRY_MIN = 30;
@@ -73,6 +80,9 @@ export async function maybeRunDailyCycle(broker: BrokerTrader, now = new Date(),
   const positions = await loadPositions();
   const openOrders = await loadOpenOrders();
   const ve = virtualEquity(limits, st.account);
+  if ((await activeStrategy()) === 'spy-trend-v1') {
+    return runSpyCycle({ broker, now, day, st: { ...st, account: st.account }, limits, version, positions, openOrders, ve });
+  }
   const budget = riskBudgetPerTrade(limits, ve);
   const maxPos = (limits.capitalBaseUsd * limits.maxPositionPct) / 100;
 

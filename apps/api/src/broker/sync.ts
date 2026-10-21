@@ -133,7 +133,7 @@ export async function syncBroker(client: BrokerReader, now = new Date()): Promis
           `INSERT INTO orders (source, client_order_id, alpaca_order_id, symbol, side, type, order_class, time_in_force, qty, filled_qty,
              limit_price, stop_price, filled_avg_price, status, submitted_at, filled_at, canceled_at, legs, reason)
            VALUES ('alpaca', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE filled_qty=VALUES(filled_qty), filled_avg_price=VALUES(filled_avg_price), status=VALUES(status),
+           ON DUPLICATE KEY UPDATE qty=IF(VALUES(qty) > 0, VALUES(qty), qty), filled_qty=VALUES(filled_qty), filled_avg_price=VALUES(filled_avg_price), status=VALUES(status),
              filled_at=VALUES(filled_at), canceled_at=VALUES(canceled_at), limit_price=VALUES(limit_price), stop_price=VALUES(stop_price)`,
           [o.client_order_id, o.id, o.symbol, o.side, o.type ?? o.order_type ?? 'unknown', o.order_class || null, o.time_in_force,
             o.qty ?? 0, o.filled_qty, o.limit_price ?? null, o.stop_price ?? null, o.filled_avg_price ?? null, o.status,

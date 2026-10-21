@@ -10,6 +10,7 @@ import { getSetting, setSetting } from '../lib/settings.js';
 import { buildBrokerClient, runSync } from '../broker/index.js';
 import { backtestRequestSchema, enqueueBacktest } from '../backtest/jobs.js';
 import { liveReport } from '../reports/live.js';
+import { activeStrategy } from '../engine/cycle.js';
 import { killSwitchThreshold, riskBudgetPerTrade, riskLimitsSchema } from '../riskConfig.js';
 
 const ALLOWED_SECRETS = ['ALPACA_KEY_ID', 'ALPACA_SECRET_KEY', 'ANTHROPIC_API_KEY'] as const;
@@ -39,7 +40,9 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
         maxPositionUsd: +(lim.limits.capitalBaseUsd * lim.limits.maxPositionPct / 100).toFixed(2),
         maxExposureUsd: +(lim.limits.capitalBaseUsd * lim.limits.maxTotalExposurePct / 100).toFixed(2),
         dailyLossUsd: +(lim.limits.capitalBaseUsd * lim.limits.dailyLossLimitPct / 100).toFixed(2),
+        allocation: lim.limits.allocation,
       },
+      activeStrategy: await activeStrategy(),
       state: { mode: st[0].mode, killSwitch: !!st[0].kill_switch, killReason: st[0].kill_reason, killAt: st[0].kill_at },
       decisions, events,
     };
@@ -103,6 +106,22 @@ export function registerControlRoutes(app: FastifyInstance, cfg: AppConfig) {
     await audit(req.user!.email, 'risk.flatten_all', null, req.ip);
     await runSync(cfg);
     return { ok: true };
+  });
+
+  // ---------- Active strategy (owner decision; switching only while the bot is not ACTIVE) ----------
+  app.get('/api/strategy/active', { preHandler: requireAuth }, async () => {
+    const lim = await currentLimits();
+    return { id: await activeStrategy(), meta: await getSetting('active_strategy', null), allocation: lim.limits.allocation };
+  });
+  const stratBody = z.object({ id: z.enum(['momentum-trend-v1', 'spy-trend-v1']), confirm: z.literal('החלף אסטרטגיה') });
+  app.post('/api/strategy/active', { preHandler: requireAdmin }, async (req, reply) => {
+    const b = stratBody.safeParse(req.body);
+    if (!b.success) return reply.code(400).send({ error: 'confirm_required', message: 'יש להקליד "החלף אסטרטגיה"' });
+    const [st] = await getPool().query<Row[]>('SELECT mode FROM bot_state WHERE id = 1');
+    if (st[0].mode === 'ACTIVE') return reply.code(409).send({ error: 'bot_active', message: 'יש להעביר את הבוט ל-SAFE לפני החלפת אסטרטגיה' });
+    await setSetting('active_strategy', { id: b.data.id, approvedBy: req.user!.email, at: new Date().toISOString() });
+    await audit(req.user!.email, 'strategy.switched', { to: b.data.id }, req.ip);
+    return { ok: true, id: b.data.id };
   });
 
   app.get('/api/engine', { preHandler: requireAuth }, async () => {

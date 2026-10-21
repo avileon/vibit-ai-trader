@@ -43,13 +43,17 @@ export async function executeIntent(args: {
   }
 
   // reserve idempotency key
+  const alloc = intent.style === 'allocation';
+  const reason = alloc
+    ? (intent.kind === 'entry' ? 'SPY + פילטר מגמה: קנייה' : 'SPY + פילטר מגמה: מכירה')
+    : (intent.kind === 'entry' ? 'כניסה: Momentum + מגמה' : 'יציאה לפי חוקי האסטרטגיה');
   try {
     await pool.query(
-      `INSERT INTO orders (source, client_order_id, proposal_id, symbol, side, type, order_class, time_in_force, qty, limit_price, stop_price, status, reason, submitted_at)
-       VALUES ('alpaca', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_submit', ?, UTC_TIMESTAMP())`,
+      `INSERT INTO orders (source, client_order_id, proposal_id, symbol, side, type, order_class, time_in_force, qty, notional, limit_price, stop_price, status, reason, submitted_at)
+       VALUES ('alpaca', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_submit', ?, UTC_TIMESTAMP())`,
       [clientOrderId, proposalId, intent.symbol, intent.side, intent.limitPrice != null ? 'limit' : 'market',
-        intent.kind === 'entry' ? 'bracket' : null, intent.kind === 'entry' ? 'gtc' : 'day', intent.qty,
-        intent.limitPrice, intent.stopPrice, intent.kind === 'entry' ? 'כניסה: Momentum + מגמה' : 'יציאה לפי חוקי האסטרטגיה'],
+        !alloc && intent.kind === 'entry' ? 'bracket' : null, !alloc && intent.kind === 'entry' ? 'gtc' : 'day', intent.qty,
+        alloc && intent.side === 'buy' ? intent.notional ?? null : null, intent.limitPrice, intent.stopPrice, reason],
     );
   } catch (e) {
     if ((e as { code?: string }).code === 'ER_DUP_ENTRY') return { status: 'duplicate', decision, clientOrderId, message: 'already submitted today' };
@@ -58,7 +62,11 @@ export async function executeIntent(args: {
 
   for (const id of args.cancelBeforeExit ?? []) await broker.cancelOrder(id);
 
-  const order: NewOrder = intent.kind === 'entry'
+  const order: NewOrder = alloc
+    ? (intent.side === 'buy'
+        ? { symbol: intent.symbol, notional: intent.notional!, side: 'buy', type: 'market', time_in_force: 'day', client_order_id: clientOrderId }
+        : { symbol: intent.symbol, qty: intent.qty, side: 'sell', type: 'market', time_in_force: 'day', client_order_id: clientOrderId })
+    : intent.kind === 'entry'
     ? {
         symbol: intent.symbol, qty: intent.qty, side: 'buy', type: 'limit', time_in_force: 'gtc', limit_price: intent.limitPrice!,
         order_class: 'bracket', take_profit: { limit_price: intent.takeProfit! }, stop_loss: { stop_price: intent.stopPrice! },
@@ -69,7 +77,7 @@ export async function executeIntent(args: {
   try {
     const placed = await broker.submitOrder(order);
     await markSubmitted(clientOrderId, placed.id, placed.status, proposalId);
-    await audit('engine', 'order.submitted', { clientOrderId, symbol: intent.symbol, side: intent.side, qty: intent.qty, limit: intent.limitPrice, stop: intent.stopPrice });
+    await audit('engine', 'order.submitted', { clientOrderId, symbol: intent.symbol, side: intent.side, qty: intent.qty, notional: intent.notional ?? null, limit: intent.limitPrice, stop: intent.stopPrice });
     return { status: 'submitted', decision, clientOrderId };
   } catch (e) {
     const be = e instanceof BrokerError ? e : null;

@@ -45,13 +45,13 @@ export function orderKind(clientOrderId: string): 'entry' | 'exit' | 'other' {
 
 export async function loadOpenOrders() {
   const [rows] = await getPool().query<Row[]>(
-    "SELECT client_order_id, alpaca_order_id, symbol, side, qty, filled_qty, limit_price, status, submitted_at FROM orders WHERE source='alpaca' AND status IN (?)",
+    "SELECT client_order_id, alpaca_order_id, symbol, side, qty, notional, filled_qty, limit_price, status, submitted_at FROM orders WHERE source='alpaca' AND status IN (?)",
     [OPEN_STATUSES],
   );
   return rows.map((o) => ({
     clientOrderId: o.client_order_id as string, alpacaId: o.alpaca_order_id as string | null, symbol: o.symbol as string,
     side: o.side as 'buy' | 'sell', qty: Number(o.qty), filledQty: Number(o.filled_qty), status: o.status as string,
-    notional: Number(o.limit_price ?? 0) * (Number(o.qty) - Number(o.filled_qty)),
+    notional: o.notional != null && Number(o.filled_qty) === 0 ? Number(o.notional) : Number(o.limit_price ?? 0) * (Number(o.qty) - Number(o.filled_qty)),
     submittedAt: o.submitted_at ? new Date(o.submitted_at) : null, kind: orderKind(o.client_order_id),
   }));
 }

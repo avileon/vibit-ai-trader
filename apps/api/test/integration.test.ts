@@ -285,6 +285,78 @@ d('API integration (MySQL)', () => {
     });
   });
 
+  describe('spy-trend-v1 engine (mock broker)', () => {
+    const NOW = new Date('2026-10-21T14:30:00Z'); // Wed 10:30 New York
+    async function setup(spyDrift: number) {
+      const { MockBroker } = await import('./mockBroker.js');
+      const { makeBars } = await import('./fixtures.js');
+      const { getPool } = await import('../src/db/pool.js');
+      const b = new MockBroker();
+      b.positions = []; b.orders = [];
+      b.quoteTs = NOW;
+      b.barsMulti = { SPY: makeBars(260, spyDrift > 0 ? 400 : 700, spyDrift, NOW), XLF: makeBars(260, 30, 0.002, NOW) };
+      b.account = { ...b.account, cash: 100_000 } as typeof b.account; // the paper account has plenty of cash; sizing must still use virtual equity
+      await getPool().query("UPDATE bot_state SET mode='ACTIVE', kill_switch=0, kill_reason=NULL, engine_last_run_day=NULL WHERE id=1");
+      await getPool().query("DELETE FROM orders WHERE source='alpaca'");
+      return { b, pool: getPool() };
+    }
+
+    it('migration applies the owner-approved switch on an existing deployment (other thresholds unchanged)', async () => {
+      const { getPool } = await import('../src/db/pool.js');
+      const { migrate } = await import('../src/db/migrate.js');
+      const before = (await app.inject({ url: '/api/risk', headers: { cookie } })).json();
+      await getPool().query('ALTER TABLE orders DROP COLUMN notional');
+      await getPool().query("DELETE FROM schema_migrations WHERE name='005_allocation.sql'");
+      expect(await migrate(url)).toEqual(['005_allocation.sql']);
+      const s = (await app.inject({ url: '/api/strategy/active', headers: { cookie } })).json();
+      expect(s.id).toBe('spy-trend-v1');
+      expect(s.allocation).toEqual({ maxExposurePct: 100, fractional: true, symbols: ['SPY'] });
+      const after = (await app.inject({ url: '/api/risk', headers: { cookie } })).json();
+      expect(after.limitsVersion).toBe(before.limitsVersion + 1);
+      const { allocation: _a, ...restAfter } = after.limits;
+      const { allocation: _b, ...restBefore } = before.limits;
+      expect(restAfter).toEqual(restBefore);
+    });
+
+    it('above SMA200: buys SPY by notional ≈ virtual equity (market DAY, fractional), records notional', async () => {
+      const { b, pool } = await setup(0.002);
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.results, JSON.stringify(rep.results)).toEqual([expect.objectContaining({ symbol: 'SPY', kind: 'entry', status: 'submitted' })]);
+      const o = b.submitted[0];
+      expect(o).toMatchObject({ symbol: 'SPY', side: 'buy', type: 'market', time_in_force: 'day', client_order_id: 'vibit-entry-SPY-20261021' });
+      expect(o.qty).toBeUndefined();
+      expect(o.order_class).toBeUndefined();
+      expect(o.notional!).toBeGreaterThan(900);
+      expect(o.notional!).toBeLessThan(1100); // virtual equity, never the paper balance
+      const [row] = await pool.query<mysql.RowDataPacket[]>("SELECT notional FROM orders WHERE client_order_id='vibit-entry-SPY-20261021'");
+      expect(Number(row[0].notional)).toBe(o.notional);
+      expect((await maybeRunDailyCycle(b, NOW)).reason).toBe('already ran today');
+    });
+
+    it('below SMA200: sells the whole fractional SPY holding and closes leftover v1 positions', async () => {
+      const { b } = await setup(-0.002);
+      b.positions = [
+        { symbol: 'SPY', qty: 1.523456789, avg_entry_price: 650, current_price: 656, market_value: 999.39, unrealized_pl: 9.1, side: 'long' } as any,
+        { symbol: 'XLF', qty: 5, avg_entry_price: 40, current_price: 41.25, market_value: 206.25, unrealized_pl: 6.25, side: 'long' } as any,
+      ];
+      const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');
+      const rep = await maybeRunDailyCycle(b, NOW);
+      expect(rep.regimeOk).toBe(false);
+      expect(rep.results!.map((r) => [r.symbol, r.status]), JSON.stringify(rep.results)).toEqual([['XLF', 'submitted'], ['SPY', 'submitted']]);
+      expect(b.submitted.find((o) => o.symbol === 'SPY')).toMatchObject({ side: 'sell', type: 'market', time_in_force: 'day', qty: 1.523456789 });
+      expect(b.submitted.find((o) => o.symbol === 'XLF')).toMatchObject({ side: 'sell', qty: 5 });
+    });
+
+    it('switching strategy requires SAFE mode and typed confirmation', async () => {
+      const post = (payload: object) => app.inject({ method: 'POST', url: '/api/strategy/active', headers: { ...H, cookie }, payload });
+      expect((await post({ id: 'momentum-trend-v1', confirm: 'החלף אסטרטגיה' })).statusCode).toBe(409); // still ACTIVE
+      await app.inject({ method: 'POST', url: '/api/bot/mode', headers: { ...H, cookie }, payload: { mode: 'SAFE' } });
+      expect((await post({ id: 'momentum-trend-v1' })).statusCode).toBe(400);
+      expect((await post({ id: 'momentum-trend-v1', confirm: 'החלף אסטרטגיה' })).json()).toEqual({ ok: true, id: 'momentum-trend-v1' });
+    });
+  });
+
   it('Strategy Lab: queue a backtest via API, worker runs it, result is readable', async () => {
     const { MockBroker } = await import('./mockBroker.js');
     const { makeBars } = await import('./fixtures.js');

@@ -106,7 +106,9 @@ const barsResponseSchema = z.object({ bars: z.record(z.array(barSchema)).nullabl
 
 export interface NewOrder {
   symbol: string;
-  qty: number;
+  qty?: number;
+  /** USD amount (fractional market DAY buys only) — mutually exclusive with qty */
+  notional?: number;
   side: 'buy' | 'sell';
   type: 'market' | 'limit';
   time_in_force: 'day' | 'gtc';
@@ -295,6 +297,10 @@ export class AlpacaClient implements BrokerTrader {
 
   async submitOrder(o: NewOrder): Promise<AlpacaOrder> {
     if (o.side === 'sell' && o.order_class === 'bracket') throw new BrokerError('client', 'Bracket sell (short) is not allowed');
+    if ((o.qty == null) === (o.notional == null)) throw new BrokerError('client', 'Exactly one of qty / notional is required');
+    if (o.notional != null && (o.side !== 'buy' || o.type !== 'market' || o.time_in_force !== 'day')) {
+      throw new BrokerError('client', 'Notional orders must be market DAY buys');
+    }
     return this.parse(orderSchema, await this.request(`${this.base}/v2/orders`, { method: 'POST', body: o }), 'order') as AlpacaOrder;
   }
 

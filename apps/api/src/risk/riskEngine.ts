@@ -16,6 +16,10 @@ export interface OrderIntent {
   limitPrice: number | null; // null = market (exits only)
   stopPrice: number | null;
   takeProfit: number | null;
+  /** 'allocation' = SPY trend strategy: market DAY orders, buys by notional, fractional qty, no bracket */
+  style?: 'bracket' | 'allocation';
+  /** USD amount for allocation buys */
+  notional?: number | null;
 }
 
 export interface RiskContext {
@@ -43,6 +47,7 @@ export interface RiskDecision { approved: boolean; checks: RiskCheck[]; failed: 
 const SYNC_MAX_AGE_MS = 3 * 60_000;
 
 export function evaluateOrder(o: OrderIntent, c: RiskContext): RiskDecision {
+  if (o.style === 'allocation') return evaluateAllocationOrder(o, c);
   const L = c.limits;
   const checks: RiskCheck[] = [];
   const add = (id: string, ok: boolean, detail: string) => checks.push({ id, ok, detail });
@@ -121,6 +126,75 @@ export function evaluateOrder(o: OrderIntent, c: RiskContext): RiskDecision {
   const dup = c.openOrders.some((x) => x.symbol === o.symbol && x.side === o.side && x.kind !== 'other');
   add('no_duplicate', !dup, dup ? 'כבר קיימת הוראה פתוחה זהה' : 'אין הוראה כפולה');
 
+  const failed = checks.filter((x) => !x.ok).map((x) => x.id);
+  return { approved: failed.length === 0, checks, failed };
+}
+
+/** Shared state/market/quote checks (identical for every strategy). */
+function baseChecks(c: RiskContext, add: (id: string, ok: boolean, detail: string) => void) {
+  const L = c.limits;
+  add('mode_active', c.botMode === 'ACTIVE', `מצב בוט: ${c.botMode}`);
+  add('kill_switch_off', !c.killSwitch, c.killSwitch ? 'Kill Switch פעיל' : 'כבוי');
+  add('broker_ok', c.brokerStatus === 'ok', `סטטוס ברוקר: ${c.brokerStatus}`);
+  const syncAge = c.lastSyncAt ? c.now.getTime() - c.lastSyncAt.getTime() : Infinity;
+  add('sync_fresh', syncAge <= SYNC_MAX_AGE_MS, `סנכרון אחרון לפני ${Number.isFinite(syncAge) ? Math.round(syncAge / 1000) : '∞'} שנ׳`);
+  const open = !!c.clock?.isOpen && c.clock.nextClose.getTime() > c.now.getTime();
+  add('market_open', open, open ? 'השוק פתוח (שעון Alpaca)' : 'השוק סגור');
+  if (open) {
+    const sinceOpen = nyMinutes(c.now) - (9 * 60 + 30);
+    const toClose = (c.clock!.nextClose.getTime() - c.now.getTime()) / 60_000;
+    const ok = sinceOpen >= L.noTradeOpenCloseMinutes && toClose >= L.noTradeOpenCloseMinutes;
+    add('not_open_close_window', ok, `${Math.round(sinceOpen)} דק׳ מהפתיחה, ${Math.round(toClose)} דק׳ לסגירה (מינימום ${L.noTradeOpenCloseMinutes})`);
+  }
+  const quoteAge = c.quote ? (c.now.getTime() - c.quote.ts.getTime()) / 1000 : Infinity;
+  add('quote_fresh', quoteAge <= L.maxQuoteAgeSec, c.quote ? `ציטוט בן ${Math.round(quoteAge)} שנ׳ (מקס׳ ${L.maxQuoteAgeSec})` : 'אין ציטוט');
+  const validQuote = !!c.quote && c.quote.bid > 0 && c.quote.ask > 0 && c.quote.ask >= c.quote.bid;
+  add('quote_valid', validQuote, validQuote ? `Bid ${c.quote!.bid} / Ask ${c.quote!.ask}` : 'ציטוט חסר או שגוי (Bid/Ask לא הגיוניים)');
+  return validQuote;
+}
+
+/**
+ * Allocation orders (spy-trend-v1). Protection is the trend filter + kill switch, not a broker stop,
+ * so this gate enforces: approved symbol only, long only, fractional only if approved, exposure ≤ the
+ * approved % of VIRTUAL equity (never the $100k paper balance), cash only, daily-loss and drawdown stops.
+ */
+export function evaluateAllocationOrder(o: OrderIntent, c: RiskContext): RiskDecision {
+  const L = c.limits;
+  const A = L.allocation;
+  const checks: RiskCheck[] = [];
+  const add = (id: string, ok: boolean, detail: string) => checks.push({ id, ok, detail });
+  const validQuote = baseChecks(c, add);
+  const buy = o.side === 'buy';
+  add('asset_allowed', A.symbols.includes(o.symbol), A.symbols.includes(o.symbol) ? `${o.symbol} מאושר לאסטרטגיית הקצאה` : 'נכס לא מאושר לאסטרטגיית הקצאה');
+  add('market_order_day', o.limitPrice == null && o.stopPrice == null && o.takeProfit == null, 'פקודת Market ליום אחד בלבד');
+
+  if (buy) {
+    const n = o.notional ?? NaN;
+    add('notional_valid', Number.isFinite(n) && n >= 1, `סכום קנייה $${Number.isFinite(n) ? n.toFixed(2) : '—'} (מינ׳ $1)`);
+    add('fractional_allowed', A.fractional, A.fractional ? 'מניות חלקיות מאושרות' : 'מניות חלקיות לא אושרו');
+    if (validQuote) {
+      const mid = (c.quote!.bid + c.quote!.ask) / 2;
+      const spreadPct = ((c.quote!.ask - c.quote!.bid) / mid) * 100;
+      add('spread_ok', spreadPct <= L.maxSpreadPct, `Spread ${spreadPct.toFixed(3)}% (מקס׳ ${L.maxSpreadPct}%)`);
+    }
+    const maxExp = +(Math.max(0, c.virtualEquity) * A.maxExposurePct / 100).toFixed(2);
+    const exposure = c.positions.reduce((s, p) => s + Math.abs(p.marketValue), 0) +
+      c.openOrders.filter((x) => x.side === 'buy').reduce((s, x) => s + x.notional, 0);
+    add('total_exposure', exposure + n <= maxExp + 0.01, `חשיפה אחרי העסקה $${(exposure + n).toFixed(2)} (מקס׳ $${maxExp} = ${A.maxExposurePct}% מהשווי הווירטואלי)`);
+    add('cash_no_margin', n <= c.account.cash, `עלות $${n.toFixed(2)} מול מזומן $${c.account.cash.toFixed(2)} (ללא מינוף)`);
+    const dailyLimit = (L.capitalBaseUsd * L.dailyLossLimitPct) / 100;
+    add('daily_loss', c.dailyPl > -dailyLimit, `רווח/הפסד היום $${c.dailyPl.toFixed(2)} (עצירה ב-‎-$${dailyLimit})`);
+    const kill = killSwitchThreshold(L);
+    add('drawdown', c.virtualEquity > kill, `שווי וירטואלי $${c.virtualEquity.toFixed(2)} (עצירה ב-$${kill})`);
+  } else {
+    const pos = c.positions.find((p) => p.symbol === o.symbol);
+    const qtyOk = o.qty > 0 && (A.fractional || Number.isInteger(o.qty));
+    add('long_only', !!pos && qtyOk && pos.qty + 1e-9 >= o.qty,
+      pos ? `מכירת ${o.qty} מתוך ${pos.qty} מוחזקות` : 'אין פוזיציה — מכירה הייתה יוצרת שורט');
+  }
+
+  const dup = c.openOrders.some((x) => x.symbol === o.symbol && x.side === o.side && x.kind !== 'other');
+  add('no_duplicate', !dup, dup ? 'כבר קיימת הוראה פתוחה זהה' : 'אין הוראה כפולה');
   const failed = checks.filter((x) => !x.ok).map((x) => x.id);
   return { approved: failed.length === 0, checks, failed };
 }

@@ -20,6 +20,12 @@ export const riskLimitsSchema = z.object({
   allowOptions: z.literal(false),
   allowCrypto: z.literal(false),
   allowExtendedHours: z.literal(false),
+  /** Limits for allocation strategies (SPY + trend filter). Older stored versions lack it → conservative default. */
+  allocation: z.object({
+    maxExposurePct: z.number().positive().max(100),
+    fractional: z.boolean(),
+    symbols: z.array(z.string().regex(/^[A-Z]{1,5}$/)).min(1).max(5),
+  }).default({ maxExposurePct: 60, fractional: false, symbols: ['SPY'] }),
 });
 export type RiskLimits = z.infer<typeof riskLimitsSchema>;
 
@@ -42,6 +48,7 @@ export const DEFAULT_RISK_LIMITS: RiskLimits = {
   allowOptions: false,
   allowCrypto: false,
   allowExtendedHours: false,
+  allocation: { maxExposurePct: 60, fractional: false, symbols: ['SPY'] },
 };
 
 export function killSwitchThreshold(l: RiskLimits): number {

@@ -11,9 +11,9 @@ let cfgRef: AppConfig;
 /**
  * Trading engine process (runs 24/7, independent of the browser).
  * כל 30 שנ׳: heartbeat. כל דקה: סנכרון Alpaca Paper + housekeeping (Kill Switch אוטומטי, ביטול כניסות ישנות).
- * פעם ביום (10:00–15:30 ניו יורק, רק במצב ACTIVE): Strategy → RiskEngine → Executor.
+ * פעם ביום (10:00–15:30 ניו יורק, רק במצב ACTIVE): Strategy (האסטרטגיה הפעילה) → RiskEngine → Executor.
  */
-const VERSION = '0.5.0-phaseF';
+const VERSION = '0.6.0-spy-trend';
 const SYNC_EVERY_MS = 60_000;
 let lastSync = 0;
 let backtestRunning = false;

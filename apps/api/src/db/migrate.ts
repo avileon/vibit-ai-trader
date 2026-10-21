@@ -30,6 +30,22 @@ export async function migrate(databaseUrl = process.env.DATABASE_URL!): Promise<
       await conn.query('INSERT INTO risk_limits (limits, reason) VALUES (?, ?)', [
         JSON.stringify(DEFAULT_RISK_LIMITS), 'ברירת מחדל ראשונית — שלב א',
       ]);
+    } else if (applied.includes('005_allocation.sql')) {
+      // One-time, owner-approved change (Avi, 21.10.2026) on an EXISTING deployment:
+      // switch the live paper strategy to SPY + trend filter, 100% exposure, fractional shares.
+      // Every other threshold (kill switch, daily loss, spread…) is carried over unchanged.
+      const [last] = await conn.query<mysql.RowDataPacket[]>('SELECT limits FROM risk_limits ORDER BY version DESC LIMIT 1');
+      const prev = typeof last[0].limits === 'string' ? JSON.parse(last[0].limits) : last[0].limits;
+      const next = { ...prev, allocation: { maxExposurePct: 100, fractional: true, symbols: ['SPY'] } };
+      await conn.query('INSERT INTO risk_limits (limits, reason) VALUES (?, ?)', [
+        JSON.stringify(next), 'אושר ע״י אבי (21.10.2026): אסטרטגיית SPY + פילטר מגמה, חשיפה 100%, מניות חלקיות',
+      ]);
+      await conn.query(
+        'INSERT INTO settings (name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+        ['active_strategy', JSON.stringify({ id: 'spy-trend-v1', approvedBy: 'avi@vibit.co.il', at: new Date().toISOString() })],
+      );
+      await conn.query("INSERT INTO audit_log (actor, action, details) VALUES ('migration', 'strategy.switched', ?)",
+        [JSON.stringify({ to: 'spy-trend-v1', maxExposurePct: 100, fractional: true })]);
     }
   } finally {
     await conn.end();

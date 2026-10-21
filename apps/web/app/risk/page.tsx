@@ -30,6 +30,7 @@ export default function Risk() {
       {error && <div className="banner danger">{error}</div>}
       {data && (
         <>
+          <div className="banner info">אסטרטגיה פעילה: <b>{data.activeStrategy === 'spy-trend-v1' ? 'SPY + פילטר מגמה (spy-trend-v1)' : 'Momentum + מגמה (momentum-trend-v1)'}</b> · המנוע רץ פעם ביום, 17:00–22:30 שעון ישראל, רק במצב ACTIVE.</div>
           <div className={`banner ${data.state.killSwitch ? 'danger' : 'warn'}`}>
             מצב נוכחי: <b>{data.state.mode}</b>
             {data.state.killSwitch && <> · Kill Switch פעיל מאז {dt(data.state.killAt)} — {data.state.killReason}</>}
@@ -96,6 +97,7 @@ export default function Risk() {
               <tr><td>הון בסיס לחישוב</td><td className="num">{usd(L.capitalBaseUsd)}</td><td className="muted small">גם אם חשבון ה-Paper גדול יותר</td></tr>
               <tr><td>סיכון מתוכנן לעסקה</td><td className="num">{L.riskPerTradePct}% = {usd(D.riskPerTradeUsd)}</td><td className="muted small">לא גבול הפסד מובטח (Gap/Slippage)</td></tr>
               <tr><td>גודל פוזיציה מקסימלי</td><td className="num">{L.maxPositionPct}% = {usd(D.maxPositionUsd)}</td><td className="muted small">מניעת ריכוזיות</td></tr>
+              {D.allocation && <tr><td>אסטרטגיית SPY: חשיפה / מניות חלקיות</td><td className="num">{D.allocation.maxExposurePct}% · {D.allocation.fractional ? 'מותר' : 'אסור'}</td><td className="muted small">מהשווי הווירטואלי, לא מ-$100K. נכסים: {D.allocation.symbols.join(', ')}</td></tr>}
               <tr><td>חשיפה כוללת מקסימלית</td><td className="num">{L.maxTotalExposurePct}% = {usd(D.maxExposureUsd)}</td><td className="muted small">תמיד נשאר מזומן</td></tr>
               <tr><td>פוזיציות פתוחות</td><td className="num">עד {L.maxOpenPositions}</td><td /></tr>
               <tr><td>הפסד יומי</td><td className="num">{L.dailyLossLimitPct}% = {usd(D.dailyLossUsd)}</td><td className="muted small">אין עסקאות חדשות עד מחר</td></tr>

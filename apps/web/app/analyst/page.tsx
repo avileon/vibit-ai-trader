@@ -26,10 +26,18 @@ export default function Analyst() {
             <div className="card"><div className="stat-label">מצב שוק (SPY מול ממוצע 200)</div>
               <div className={`stat-value ${rep.regimeOk ? 'pos' : 'neg'}`} style={{ fontSize: 18 }}>{rep.regimeOk ? 'מגמה עולה — מותר להיכנס' : 'מתחת לממוצע — אין כניסות'}</div>
               <div className="stat-sub num">SPY {rep.regime.spyClose} / SMA200 {rep.regime.spySma200}</div></div>
-            <div className="card"><div className="stat-label">שווי וירטואלי</div><div className="stat-value num">{usd(rep.virtualEquity)}</div><div className="stat-sub">תקציב סיכון לעסקה {usd(rep.riskBudgetUsd)}</div></div>
+            <div className="card"><div className="stat-label">שווי וירטואלי</div><div className="stat-value num">{usd(rep.virtualEquity)}</div><div className="stat-sub">{rep.allocation ? `יעד החזקה ב-SPY ${usd(rep.allocation.targetUsd)} (${rep.allocation.maxExposurePct}%)` : `תקציב סיכון לעסקה ${usd(rep.riskBudgetUsd)}`}</div></div>
           </div>
 
           <div className="grid two" style={{ marginBottom: 14 }}>
+            {rep.allocation ? (
+              <div className="card">
+                <h2>החלטת היום: SPY + פילטר מגמה</h2>
+                <p className={rep.allocation.signal === 'in' ? 'pos' : 'neg'}><b>{rep.allocation.signal === 'in' ? 'מחזיקים SPY' : rep.allocation.signal === 'out' ? 'במזומן' : 'אין מספיק נתונים'}</b></p>
+                <ul className="clean small">{rep.allocation.rationale.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul>
+                <p className="muted small">מחזיקים כעת {usd(rep.allocation.heldValue)} מתוך יעד {usd(rep.allocation.targetUsd)}. החוק: SPY מעל ממוצע 200 ימים → מחזיקים; מתחת → מוכרים הכל ונשארים במזומן.</p>
+              </div>
+            ) : (
             <div className="card">
               <h2>מועמדים מדורגים (מומנטום 6 חודשים, רק במגמה עולה)</h2>
               {rep.ranked.length === 0 ? <p className="muted small">אין מועמדים שעומדים בתנאי המגמה.</p> : (
@@ -37,13 +45,15 @@ export default function Analyst() {
                   <tbody>{rep.ranked.map((r: any, i: number) => <tr key={r.symbol}><td>{i + 1}</td><td><b>{r.symbol}</b></td><td className="num pos">{r.roc126}%</td></tr>)}</tbody></table>
               )}
             </div>
+            )}
             <div className="card">
               <h2>תוצאות הריצה</h2>
               {rep.results.length === 0 ? <p className="muted small">לא היו הצעות (אין מקום פנוי או אין מועמד מתאים).</p> : (
                 <ul className="clean small">{rep.results.map((r: any, i: number) => <li key={i}><b>{r.symbol}</b> ({r.kind === 'entry' ? 'כניסה' : 'יציאה'}) — {RES[r.status] ?? r.status}{r.message ? `: ${r.message}` : ''}</li>)}</ul>
               )}
+              {rep.skipped.length > 0 && <>
               <h2 style={{ marginTop: 14 }}>מה סונן ולמה</h2>
-              <ul className="clean small" style={{ maxHeight: 220, overflow: 'auto' }}>{rep.skipped.map((s: any, i: number) => <li key={i}><b>{s.symbol}</b>: {s.reason}</li>)}</ul>
+              <ul className="clean small" style={{ maxHeight: 220, overflow: 'auto' }}>{rep.skipped.map((s: any, i: number) => <li key={i}><b>{s.symbol}</b>: {s.reason}</li>)}</ul></>}
             </div>
           </div>
         </>

@@ -1,0 +1,1 @@
+-- Owner-approved (Avi, 21.10.2026): kill switch drawdown 5% → 15%. Applied as a new risk-limits version in migrate.ts.

@@ -318,6 +318,18 @@ d('API integration (MySQL)', () => {
       expect(restAfter).toEqual(restBefore);
     });
 
+    it('migration applies the owner-approved kill-switch change (15%) as a new version, nothing else changes', async () => {
+      const { getPool } = await import('../src/db/pool.js');
+      const { migrate } = await import('../src/db/migrate.js');
+      const before = (await app.inject({ url: '/api/risk', headers: { cookie } })).json();
+      await getPool().query("DELETE FROM schema_migrations WHERE name='006_kill_switch_15.sql'");
+      expect(await migrate(url)).toEqual(['006_kill_switch_15.sql']);
+      const after = (await app.inject({ url: '/api/risk', headers: { cookie } })).json();
+      expect(after.limitsVersion).toBe(before.limitsVersion + 1);
+      expect(after.limits).toEqual({ ...before.limits, killSwitchDrawdownPct: 15 });
+      expect(after.derived.killSwitchEquity).toBe(850);
+    });
+
     it('above SMA200: buys SPY by notional ≈ virtual equity (market DAY, fractional), records notional', async () => {
       const { b, pool } = await setup(0.002);
       const { maybeRunDailyCycle } = await import('../src/engine/cycle.js');

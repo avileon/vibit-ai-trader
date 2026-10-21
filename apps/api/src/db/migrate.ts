@@ -47,6 +47,16 @@ export async function migrate(databaseUrl = process.env.DATABASE_URL!): Promise<
       await conn.query("INSERT INTO audit_log (actor, action, details) VALUES ('migration', 'strategy.switched', ?)",
         [JSON.stringify({ to: 'spy-trend-v1', maxExposurePct: 100, fractional: true })]);
     }
+    if (Number(rl[0].c) > 0 && applied.includes('006_kill_switch_15.sql')) {
+      // One-time, owner-approved change (Avi, 21.10.2026): automatic kill switch at 15% virtual drawdown ($850 on $1,000).
+      const [last] = await conn.query<mysql.RowDataPacket[]>('SELECT limits FROM risk_limits ORDER BY version DESC LIMIT 1');
+      const prev = typeof last[0].limits === 'string' ? JSON.parse(last[0].limits) : last[0].limits;
+      await conn.query('INSERT INTO risk_limits (limits, reason) VALUES (?, ?)', [
+        JSON.stringify({ ...prev, killSwitchDrawdownPct: 15 }), 'אושר ע״י אבי (21.10.2026): Kill Switch אוטומטי ב-15% ירידה (שווי וירטואלי $850)',
+      ]);
+      await conn.query("INSERT INTO audit_log (actor, action, details) VALUES ('migration', 'risk.limits_changed', ?)",
+        [JSON.stringify({ killSwitchDrawdownPct: { from: prev.killSwitchDrawdownPct, to: 15 } })]);
+    }
   } finally {
     await conn.end();
   }
